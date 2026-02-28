@@ -2,7 +2,7 @@
   description = "Pangea Kubernetes — cloud-agnostic Kubernetes abstractions";
 
   inputs = {
-    nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-25.11";
     ruby-nix.url = "github:inscapist/ruby-nix";
     flake-utils.url = "github:numtide/flake-utils";
     substrate = {
