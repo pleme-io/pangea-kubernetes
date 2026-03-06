@@ -15,7 +15,7 @@
 # limitations under the License.
 
 require 'pangea/kubernetes/backends/base'
-require 'pangea/kubernetes/bare_metal/cloud_init'
+require 'pangea/kubernetes/backends/nixos_base'
 
 module Pangea
   module Kubernetes
@@ -32,6 +32,7 @@ module Pangea
       # No managed K8s services (GKE) — all k3s/k8s managed by NixOS.
       module GcpNixos
         include Base
+        extend NixosBase
 
         class << self
           def backend_name = :gcp_nixos
@@ -120,77 +121,56 @@ module Pangea
 
           # Create control plane GCE instances (static, no MIG)
           def create_cluster(ctx, name, config, result, tags)
-            system_pool = config.system_node_pool
-            machine_type = system_pool.instance_types.first
-            image = config.gce_image || config.nixos&.image_id || 'nixos-24-05'
-
-            cp_count = [system_pool.min_size, 1].max
-            servers = []
-
-            cp_count.times do |idx|
-              cloud_init = BareMetal::CloudInit.generate(
-                cluster_name: name.to_s,
-                distribution: config.distribution,
-                profile: config.profile,
-                distribution_track: config.distribution_track || config.kubernetes_version,
-                role: 'server',
-                node_index: idx,
-                cluster_init: idx.zero?,
-                fluxcd: config.fluxcd&.to_h
-              )
-
-              server = ctx.google_compute_instance(
-                :"#{name}_cp_#{idx}",
-                name: "#{name}-cp-#{idx}",
-                machine_type: machine_type,
-                zone: "#{config.region}-a",
-                project: config.project,
-                boot_disk: {
-                  initialize_params: {
-                    image: image,
-                    size: system_pool.disk_size_gb
-                  }
-                },
-                network_interface: {
-                  network: result.network&.dig(:vpc)&.id,
-                  subnetwork: result.network&.dig(:subnet)&.id,
-                  access_config: {}
-                },
-                metadata: {
-                  'user-data' => cloud_init
-                },
-                service_account: {
-                  email: result.iam&.dig(:node_sa)&.email,
-                  scopes: ['cloud-platform']
-                },
-                labels: gce_labels(tags.merge(
-                  role: 'control-plane',
-                  node_index: idx.to_s,
-                  distribution: config.distribution.to_s
-                ))
-              )
-
-              servers << server
-            end
-
-            servers.first
+            nixos_create_cluster(ctx, name, config, result, tags)
           end
 
           # Create worker node pool via Instance Template + MIG + Autoscaler
           def create_node_pool(ctx, name, cluster_ref, pool_config, tags)
+            nixos_create_node_pool(ctx, name, cluster_ref, pool_config, tags)
+          end
+
+          # --- NixosBase template hooks ---
+
+          def create_compute_instance(ctx, name, config, result, cloud_init, index, tags)
+            system_pool = config.system_node_pool
+            machine_type = system_pool.instance_types.first
+            image = config.gce_image || config.nixos&.image_id || 'nixos-24-05'
+
+            ctx.google_compute_instance(
+              :"#{name}_cp_#{index}",
+              name: "#{name}-cp-#{index}",
+              machine_type: machine_type,
+              zone: "#{config.region}-a",
+              project: config.project,
+              boot_disk: {
+                initialize_params: {
+                  image: image,
+                  size: system_pool.disk_size_gb
+                }
+              },
+              network_interface: {
+                network: result.network&.dig(:vpc)&.id,
+                subnetwork: result.network&.dig(:subnet)&.id,
+                access_config: {}
+              },
+              metadata: {
+                'user-data' => cloud_init
+              },
+              service_account: {
+                email: result.iam&.dig(:node_sa)&.email,
+                scopes: ['cloud-platform']
+              },
+              labels: gce_labels(tags.merge(
+                role: 'control-plane',
+                node_index: index.to_s,
+                distribution: config.distribution.to_s
+              ))
+            )
+          end
+
+          def create_worker_pool(ctx, name, _cluster_ref, pool_config, cloud_init, tags)
             pool_name = :"#{name}_#{pool_config.name}"
             machine_type = pool_config.instance_types.first
-
-            cloud_init = BareMetal::CloudInit.generate(
-              cluster_name: name.to_s,
-              distribution: tags[:Distribution]&.to_sym || :k3s,
-              profile: tags[:Profile] || 'cilium-standard',
-              distribution_track: tags[:DistributionTrack] || '1.34',
-              role: 'agent',
-              node_index: 0,
-              cluster_init: false,
-              join_server: cluster_ref.ipv4_address
-            )
 
             # Instance Template
             template = ctx.google_compute_instance_template(

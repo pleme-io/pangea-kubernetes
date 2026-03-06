@@ -10,17 +10,6 @@ end
 lib_path = File.expand_path('../lib', __dir__)
 $LOAD_PATH.unshift(lib_path) unless $LOAD_PATH.include?(lib_path)
 
-require 'rspec'
-
-begin
-  require 'dry-types'
-  require 'dry-struct'
-  require 'terraform-synthesizer'
-  require 'json'
-rescue LoadError => e
-  puts "Warning: Could not load dependency: #{e.message}"
-end
-
 begin
   require 'pangea-kubernetes'
 
@@ -38,21 +27,8 @@ rescue LoadError => e
   puts "Warning: Could not load pangea-kubernetes: #{e.message}"
 end
 
+require 'pangea/testing'
+
 Dir[File.join(__dir__, 'support', '**', '*.rb')].each { |f| require f }
 
-RSpec.configure do |config|
-  config.example_status_persistence_file_path = ".rspec_status"
-  config.disable_monkey_patching!
-  config.expect_with :rspec do |c|
-    c.syntax = :expect
-  end
-  config.include SynthesisTestHelpers if defined?(SynthesisTestHelpers)
-  config.before(:suite) { ENV['PANGEA_ENV'] = 'test' }
-  config.formatter = :progress
-  config.color = true
-  config.filter_run_when_matching :focus
-  config.run_all_when_everything_filtered = true
-  config.order = :random
-  Kernel.srand config.seed
-  config.warnings = false
-end
+Pangea::Testing::SpecSetup.configure!

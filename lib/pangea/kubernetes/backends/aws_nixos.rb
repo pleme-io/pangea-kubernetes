@@ -15,7 +15,7 @@
 # limitations under the License.
 
 require 'pangea/kubernetes/backends/base'
-require 'pangea/kubernetes/bare_metal/cloud_init'
+require 'pangea/kubernetes/backends/nixos_base'
 
 module Pangea
   module Kubernetes
@@ -32,6 +32,7 @@ module Pangea
       # No managed K8s services (EKS) — all k3s/k8s managed by NixOS.
       module AwsNixos
         include Base
+        extend NixosBase
 
         class << self
           def backend_name = :aws_nixos
@@ -85,7 +86,7 @@ module Pangea
               name: "#{name}-k8s-nodes",
               description: "Security group for #{name} k8s/k3s NixOS nodes",
               vpc_id: network[:vpc].id,
-              ingress: security_group_rules(config.distribution),
+              ingress: aws_security_group_rules(config.distribution),
               egress: [{ from_port: 0, to_port: 0, protocol: '-1', cidr_blocks: ['0.0.0.0/0'] }],
               tags: tags.merge(Name: "#{name}-sg")
             )
@@ -125,6 +126,18 @@ module Pangea
 
           # Create control plane EC2 instances (static, no ASG)
           def create_cluster(ctx, name, config, result, tags)
+            # Create firewall (security group) via create_network already done
+            nixos_create_cluster(ctx, name, config, result, tags)
+          end
+
+          # Create worker node pool via Launch Template + Auto Scaling Group
+          def create_node_pool(ctx, name, cluster_ref, pool_config, tags)
+            nixos_create_node_pool(ctx, name, cluster_ref, pool_config, tags)
+          end
+
+          # --- NixosBase template hooks ---
+
+          def create_compute_instance(ctx, name, config, result, cloud_init, index, tags)
             system_pool = config.system_node_pool
             instance_type = system_pool.instance_types.first
             ami_id = config.ami_id || config.nixos&.image_id || 'ami-nixos-latest'
@@ -139,59 +152,27 @@ module Pangea
 
             sg_id = result.network&.dig(:sg)&.id
 
-            cp_count = [system_pool.min_size, 1].max
-            servers = []
-
-            cp_count.times do |idx|
-              cloud_init = BareMetal::CloudInit.generate(
-                cluster_name: name.to_s,
-                distribution: config.distribution,
-                profile: config.profile,
-                distribution_track: config.distribution_track || config.kubernetes_version,
-                role: 'server',
-                node_index: idx,
-                cluster_init: idx.zero?,
-                fluxcd: config.fluxcd&.to_h
+            ctx.aws_instance(
+              :"#{name}_cp_#{index}",
+              ami: ami_id,
+              instance_type: instance_type,
+              subnet_id: subnet_ids[index % subnet_ids.size],
+              vpc_security_group_ids: sg_id ? [sg_id] : [],
+              key_name: config.key_pair,
+              iam_instance_profile: result.iam&.dig(:instance_profile)&.name,
+              user_data: cloud_init,
+              root_block_device: { volume_size: system_pool.disk_size_gb, volume_type: 'gp3' },
+              tags: tags.merge(
+                Name: "#{name}-cp-#{index}",
+                Role: 'control-plane',
+                Distribution: config.distribution.to_s
               )
-
-              server = ctx.aws_instance(
-                :"#{name}_cp_#{idx}",
-                ami: ami_id,
-                instance_type: instance_type,
-                subnet_id: subnet_ids[idx % subnet_ids.size],
-                vpc_security_group_ids: sg_id ? [sg_id] : [],
-                key_name: config.key_pair,
-                iam_instance_profile: result.iam&.dig(:instance_profile)&.name,
-                user_data: cloud_init,
-                root_block_device: { volume_size: system_pool.disk_size_gb, volume_type: 'gp3' },
-                tags: tags.merge(
-                  Name: "#{name}-cp-#{idx}",
-                  Role: 'control-plane',
-                  Distribution: config.distribution.to_s
-                )
-              )
-
-              servers << server
-            end
-
-            servers.first
+            )
           end
 
-          # Create worker node pool via Launch Template + Auto Scaling Group
-          def create_node_pool(ctx, name, cluster_ref, pool_config, tags)
+          def create_worker_pool(ctx, name, _cluster_ref, pool_config, cloud_init, tags)
             pool_name = :"#{name}_#{pool_config.name}"
             instance_type = pool_config.instance_types.first
-
-            cloud_init = BareMetal::CloudInit.generate(
-              cluster_name: name.to_s,
-              distribution: tags[:Distribution]&.to_sym || :k3s,
-              profile: tags[:Profile] || 'cilium-standard',
-              distribution_track: tags[:DistributionTrack] || '1.34',
-              role: 'agent',
-              node_index: 0,
-              cluster_init: false,
-              join_server: cluster_ref.ipv4_address
-            )
 
             # Launch Template
             lt = ctx.aws_launch_template(
@@ -216,7 +197,7 @@ module Pangea
             )
 
             # Auto Scaling Group
-            asg = ctx.aws_autoscaling_group(
+            ctx.aws_autoscaling_group(
               :"#{pool_name}_asg",
               name: "#{name}-#{pool_config.name}-asg",
               min_size: pool_config.min_size,
@@ -235,31 +216,28 @@ module Pangea
                 { key: 'NodePool', value: pool_config.name.to_s, propagate_at_launch: true }
               ]
             )
-
-            asg
           end
 
           private
 
-          def security_group_rules(distribution)
-            rules = [
-              { from_port: 22, to_port: 22, protocol: 'tcp', cidr_blocks: ['0.0.0.0/0'], description: 'SSH' },
-              { from_port: 80, to_port: 80, protocol: 'tcp', cidr_blocks: ['0.0.0.0/0'], description: 'HTTP' },
-              { from_port: 443, to_port: 443, protocol: 'tcp', cidr_blocks: ['0.0.0.0/0'], description: 'HTTPS' },
-              { from_port: 6443, to_port: 6443, protocol: 'tcp', cidr_blocks: ['0.0.0.0/0'], description: 'K8s API' },
-              { from_port: 10250, to_port: 10250, protocol: 'tcp', cidr_blocks: ['10.0.0.0/8'], description: 'Kubelet' },
-              { from_port: 2379, to_port: 2380, protocol: 'tcp', cidr_blocks: ['10.0.0.0/8'], description: 'etcd' },
-              { from_port: 8472, to_port: 8472, protocol: 'udp', cidr_blocks: ['10.0.0.0/8'], description: 'VXLAN' }
-            ]
-
-            if distribution.to_sym == :kubernetes
-              rules += [
-                { from_port: 10257, to_port: 10257, protocol: 'tcp', cidr_blocks: ['10.0.0.0/8'], description: 'controller-manager' },
-                { from_port: 10259, to_port: 10259, protocol: 'tcp', cidr_blocks: ['10.0.0.0/8'], description: 'scheduler' }
-              ]
+          def aws_security_group_rules(distribution)
+            base_firewall_ports(distribution).map do |_name, port_def|
+              {
+                from_port: port_range_start(port_def[:port]),
+                to_port: port_range_end(port_def[:port]),
+                protocol: port_def[:protocol].to_s,
+                cidr_blocks: port_def[:public] ? ['0.0.0.0/0'] : ['10.0.0.0/8'],
+                description: port_def[:description]
+              }
             end
+          end
 
-            rules
+          def port_range_start(port)
+            port.is_a?(String) ? port.split('-').first.to_i : port
+          end
+
+          def port_range_end(port)
+            port.is_a?(String) ? port.split('-').last.to_i : port
           end
         end
       end

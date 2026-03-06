@@ -16,6 +16,15 @@
 
 require 'dry-struct'
 require 'pangea/resources/types'
+require 'pangea/kubernetes/types/firewall_config'
+require 'pangea/kubernetes/types/kernel_config'
+require 'pangea/kubernetes/types/wait_for_dns_config'
+require 'pangea/kubernetes/types/etcd_config'
+require 'pangea/kubernetes/types/pki_config'
+require 'pangea/kubernetes/types/control_plane_config'
+require 'pangea/kubernetes/types/secrets_config'
+require 'pangea/kubernetes/types/k3s_config'
+require 'pangea/kubernetes/types/kubernetes_config'
 
 module Pangea
   module Kubernetes
@@ -144,16 +153,45 @@ module Pangea
         attribute :reconcile_interval, T::String.default('2m0s')
         attribute :sops_enabled, T::Bool.default(true)
 
+        # Git branch to track
+        attribute :source_branch, T::String.default('main')
+
+        # Enable pruning during reconciliation
+        attribute :reconcile_prune, T::Bool.default(true)
+
+        # SSH known hosts content for git source
+        attribute :known_hosts, T::String.optional.default(nil)
+
+        # Path to SSH key file (sops-nix decrypted path on NixOS)
+        attribute :source_ssh_key_file, T::String.optional.default(nil)
+
+        # Path to token file (sops-nix decrypted path on NixOS)
+        attribute :source_token_file, T::String.optional.default(nil)
+
+        # Username for token-based auth
+        attribute :source_token_username, T::String.default('git')
+
+        # Path to SOPS age key file (sops-nix decrypted path on NixOS)
+        attribute :sops_age_key_file, T::String.optional.default(nil)
+
         def to_h
-          {
+          hash = {
             enabled: enabled,
             source_url: source_url,
             source_auth: source_auth,
             source_interval: source_interval,
             reconcile_path: reconcile_path,
             reconcile_interval: reconcile_interval,
-            sops_enabled: sops_enabled
+            sops_enabled: sops_enabled,
+            source_branch: source_branch,
+            reconcile_prune: reconcile_prune,
+            source_token_username: source_token_username
           }
+          hash[:known_hosts] = known_hosts if known_hosts
+          hash[:source_ssh_key_file] = source_ssh_key_file if source_ssh_key_file
+          hash[:source_token_file] = source_token_file if source_token_file
+          hash[:sops_age_key_file] = sops_age_key_file if sops_age_key_file
+          hash
         end
       end
 
@@ -167,6 +205,15 @@ module Pangea
         attribute :sops_age_key_secret, T::String.optional.default(nil)
         attribute :flux_ssh_key_secret, T::String.optional.default(nil)
 
+        # K3s distribution options (when distribution == :k3s)
+        attribute :k3s, K3sConfig.optional.default(nil)
+
+        # Vanilla Kubernetes distribution options (when distribution == :kubernetes)
+        attribute :kubernetes, VanillaKubernetesConfig.optional.default(nil)
+
+        # Secrets configuration (sops-nix path references)
+        attribute :secrets, SecretsConfig.optional.default(nil)
+
         def to_h
           hash = {}
           hash[:image_id] = image_id if image_id
@@ -174,6 +221,9 @@ module Pangea
           hash[:extra_modules] = extra_modules if extra_modules.any?
           hash[:sops_age_key_secret] = sops_age_key_secret if sops_age_key_secret
           hash[:flux_ssh_key_secret] = flux_ssh_key_secret if flux_ssh_key_secret
+          hash[:k3s] = k3s.to_h if k3s
+          hash[:kubernetes] = kubernetes.to_h if kubernetes
+          hash[:secrets] = secrets.to_h if secrets
           hash
         end
       end

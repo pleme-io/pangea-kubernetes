@@ -97,8 +97,8 @@ RSpec.describe 'Cross-Backend Interface Parity' do
 
     it 'all NixOS backends are unmanaged' do
       nixos_backends.each do |backend|
-        expect(backend.managed_kubernetes?).to be false,
-          "Expected #{backend.backend_name} to be unmanaged"
+        expect(backend.managed_kubernetes?).to(be(false),
+          "Expected #{backend.backend_name} to be unmanaged")
       end
     end
   end
@@ -187,11 +187,10 @@ RSpec.describe 'Cross-Backend Interface Parity' do
 
         backend.create_cluster(ctx, :test, config, arch_result, { ManagedBy: 'Pangea' })
 
-        # Find the first control-plane resource and check its user_data/custom_data
-        cp_resources = ctx.created_resources.select { |r| r[:name].to_s.include?('test_cp_0') }
-        expect(cp_resources).not_to be_empty, "#{backend.backend_name} should create cp_0 resource"
+        # Find the control-plane VM resource (exact name match, not NIC/template)
+        cp_0 = ctx.created_resources.find { |r| r[:name] == :test_cp_0 }
+        expect(cp_0).not_to be_nil, "#{backend.backend_name} should create test_cp_0 resource"
 
-        cp_0 = cp_resources.first
         user_data = cp_0[:attrs][:user_data] || cp_0[:attrs][:custom_data] || cp_0[:attrs].dig(:metadata, 'user-data')
         expect(user_data).to include('"distribution":"k3s"'),
           "#{backend.backend_name} should include distribution in cloud-init"

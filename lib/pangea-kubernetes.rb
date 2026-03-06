@@ -20,6 +20,7 @@ require 'pangea-core'
 require 'pangea/kubernetes/types'
 require 'pangea/kubernetes/backend_registry'
 require 'pangea/kubernetes/backends/base'
+require 'pangea/kubernetes/backends/nixos_base'
 
 # Architecture (user-facing API)
 require 'pangea/kubernetes/architecture'

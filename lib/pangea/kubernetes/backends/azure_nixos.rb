@@ -15,7 +15,7 @@
 # limitations under the License.
 
 require 'pangea/kubernetes/backends/base'
-require 'pangea/kubernetes/bare_metal/cloud_init'
+require 'pangea/kubernetes/backends/nixos_base'
 
 module Pangea
   module Kubernetes
@@ -31,6 +31,7 @@ module Pangea
       # No managed K8s services (AKS) — all k3s/k8s managed by NixOS.
       module AzureNixos
         include Base
+        extend NixosBase
 
         class << self
           def backend_name = :azure_nixos
@@ -80,7 +81,7 @@ module Pangea
               name: "#{name}-nsg",
               resource_group_name: network[:resource_group].name,
               location: config.region,
-              security_rule: nsg_rules(config.distribution),
+              security_rule: azure_nsg_rules(config.distribution),
               tags: tags
             )
 
@@ -101,89 +102,68 @@ module Pangea
 
           # Create control plane Azure VMs (static)
           def create_cluster(ctx, name, config, result, tags)
+            nixos_create_cluster(ctx, name, config, result, tags)
+          end
+
+          # Create worker node pool via VMSS (VM Scale Set)
+          def create_node_pool(ctx, name, cluster_ref, pool_config, tags)
+            nixos_create_node_pool(ctx, name, cluster_ref, pool_config, tags)
+          end
+
+          # --- NixosBase template hooks ---
+
+          def create_compute_instance(ctx, name, config, result, cloud_init, index, tags)
             system_pool = config.system_node_pool
             vm_size = system_pool.instance_types.first
             image_id = config.azure_image_id || config.nixos&.image_id
             rg_name = config.resource_group_name || result.network&.dig(:resource_group)&.name || "#{name}-rg"
 
-            cp_count = [system_pool.min_size, 1].max
-            servers = []
+            # Network interface
+            nic = ctx.azurerm_network_interface(
+              :"#{name}_cp_#{index}_nic",
+              name: "#{name}-cp-#{index}-nic",
+              resource_group_name: rg_name,
+              location: config.region,
+              ip_configuration: {
+                name: 'internal',
+                subnet_id: result.network&.dig(:subnet)&.id,
+                private_ip_address_allocation: 'Dynamic',
+                public_ip_address_id: nil
+              },
+              tags: tags
+            )
 
-            cp_count.times do |idx|
-              cloud_init = BareMetal::CloudInit.generate(
-                cluster_name: name.to_s,
-                distribution: config.distribution,
-                profile: config.profile,
-                distribution_track: config.distribution_track || config.kubernetes_version,
-                role: 'server',
-                node_index: idx,
-                cluster_init: idx.zero?,
-                fluxcd: config.fluxcd&.to_h
+            ctx.azurerm_linux_virtual_machine(
+              :"#{name}_cp_#{index}",
+              name: "#{name}-cp-#{index}",
+              resource_group_name: rg_name,
+              location: config.region,
+              size: vm_size,
+              network_interface_ids: [nic.id],
+              admin_username: 'nixos',
+              admin_ssh_key: {
+                username: 'nixos',
+                public_key: '${file("~/.ssh/id_ed25519.pub")}'
+              },
+              os_disk: {
+                caching: 'ReadWrite',
+                storage_account_type: 'Premium_LRS',
+                disk_size_gb: system_pool.disk_size_gb
+              },
+              source_image_id: image_id,
+              custom_data: cloud_init,
+              identity: { type: 'SystemAssigned' },
+              tags: tags.merge(
+                Role: 'control-plane',
+                NodeIndex: index.to_s,
+                Distribution: config.distribution.to_s
               )
-
-              # Network interface
-              nic = ctx.azurerm_network_interface(
-                :"#{name}_cp_#{idx}_nic",
-                name: "#{name}-cp-#{idx}-nic",
-                resource_group_name: rg_name,
-                location: config.region,
-                ip_configuration: {
-                  name: 'internal',
-                  subnet_id: result.network&.dig(:subnet)&.id,
-                  private_ip_address_allocation: 'Dynamic',
-                  public_ip_address_id: nil
-                },
-                tags: tags
-              )
-
-              server = ctx.azurerm_linux_virtual_machine(
-                :"#{name}_cp_#{idx}",
-                name: "#{name}-cp-#{idx}",
-                resource_group_name: rg_name,
-                location: config.region,
-                size: vm_size,
-                network_interface_ids: [nic.id],
-                admin_username: 'nixos',
-                admin_ssh_key: {
-                  username: 'nixos',
-                  public_key: '${file("~/.ssh/id_ed25519.pub")}'
-                },
-                os_disk: {
-                  caching: 'ReadWrite',
-                  storage_account_type: 'Premium_LRS',
-                  disk_size_gb: system_pool.disk_size_gb
-                },
-                source_image_id: image_id,
-                custom_data: cloud_init,
-                identity: { type: 'SystemAssigned' },
-                tags: tags.merge(
-                  Role: 'control-plane',
-                  NodeIndex: idx.to_s,
-                  Distribution: config.distribution.to_s
-                )
-              )
-
-              servers << server
-            end
-
-            servers.first
+            )
           end
 
-          # Create worker node pool via VMSS (VM Scale Set)
-          def create_node_pool(ctx, name, cluster_ref, pool_config, tags)
+          def create_worker_pool(ctx, name, _cluster_ref, pool_config, cloud_init, tags)
             pool_name = :"#{name}_#{pool_config.name}"
             vm_size = pool_config.instance_types.first
-
-            cloud_init = BareMetal::CloudInit.generate(
-              cluster_name: name.to_s,
-              distribution: tags[:Distribution]&.to_sym || :k3s,
-              profile: tags[:Profile] || 'cilium-standard',
-              distribution_track: tags[:DistributionTrack] || '1.34',
-              role: 'agent',
-              node_index: 0,
-              cluster_init: false,
-              join_server: cluster_ref.ipv4_address
-            )
 
             vmss = ctx.azurerm_linux_virtual_machine_scale_set(
               pool_name,
@@ -260,34 +240,30 @@ module Pangea
 
           private
 
-          def nsg_rules(distribution)
-            rules = [
-              { name: 'SSH', priority: 100, direction: 'Inbound', access: 'Allow', protocol: 'Tcp',
-                source_port_range: '*', destination_port_range: '22', source_address_prefix: '*', destination_address_prefix: '*' },
-              { name: 'HTTP', priority: 110, direction: 'Inbound', access: 'Allow', protocol: 'Tcp',
-                source_port_range: '*', destination_port_range: '80', source_address_prefix: '*', destination_address_prefix: '*' },
-              { name: 'HTTPS', priority: 120, direction: 'Inbound', access: 'Allow', protocol: 'Tcp',
-                source_port_range: '*', destination_port_range: '443', source_address_prefix: '*', destination_address_prefix: '*' },
-              { name: 'K8sAPI', priority: 130, direction: 'Inbound', access: 'Allow', protocol: 'Tcp',
-                source_port_range: '*', destination_port_range: '6443', source_address_prefix: '*', destination_address_prefix: '*' },
-              { name: 'Kubelet', priority: 140, direction: 'Inbound', access: 'Allow', protocol: 'Tcp',
-                source_port_range: '*', destination_port_range: '10250', source_address_prefix: '10.0.0.0/8', destination_address_prefix: '*' },
-              { name: 'etcd', priority: 150, direction: 'Inbound', access: 'Allow', protocol: 'Tcp',
-                source_port_range: '*', destination_port_range: '2379-2380', source_address_prefix: '10.0.0.0/8', destination_address_prefix: '*' },
-              { name: 'VXLAN', priority: 160, direction: 'Inbound', access: 'Allow', protocol: 'Udp',
-                source_port_range: '*', destination_port_range: '8472', source_address_prefix: '10.0.0.0/8', destination_address_prefix: '*' }
-            ]
-
-            if distribution.to_sym == :kubernetes
-              rules += [
-                { name: 'ControllerManager', priority: 170, direction: 'Inbound', access: 'Allow', protocol: 'Tcp',
-                  source_port_range: '*', destination_port_range: '10257', source_address_prefix: '10.0.0.0/8', destination_address_prefix: '*' },
-                { name: 'Scheduler', priority: 180, direction: 'Inbound', access: 'Allow', protocol: 'Tcp',
-                  source_port_range: '*', destination_port_range: '10259', source_address_prefix: '10.0.0.0/8', destination_address_prefix: '*' }
-              ]
+          def azure_nsg_rules(distribution)
+            priority = 100
+            base_firewall_ports(distribution).map do |_port_name, port_def|
+              rule = {
+                name: nsg_rule_name(port_def[:description]),
+                priority: priority,
+                direction: 'Inbound',
+                access: 'Allow',
+                protocol: port_def[:protocol] == :tcp ? 'Tcp' : 'Udp',
+                source_port_range: '*',
+                destination_port_range: port_def[:port].to_s,
+                source_address_prefix: port_def[:public] ? '*' : '10.0.0.0/8',
+                destination_address_prefix: '*'
+              }
+              priority += 10
+              rule
             end
+          end
 
-            rules
+          # Convert description to Azure NSG rule name (strip spaces/hyphens, capitalize each word)
+          # "controller-manager" => "ControllerManager", "scheduler" => "Scheduler"
+          # Single words like "SSH", "HTTPS", "Kubelet" pass through unchanged
+          def nsg_rule_name(description)
+            description.split(/[\s-]+/).map { |w| w.sub(/\A./, &:upcase) }.join
           end
         end
       end
