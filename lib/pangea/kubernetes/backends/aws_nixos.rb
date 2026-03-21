@@ -23,13 +23,14 @@ module Pangea
       # AWS NixOS backend — EC2 instances running NixOS with k3s/k8s
       # via blackmatter-kubernetes modules.
       #
-      # Uses:
-      #   - EC2 instances for control plane (static, no ASG)
-      #   - Auto Scaling Groups for worker node pools
-      #   - VPC + Security Groups for networking
-      #   - Launch Templates for NixOS AMI + cloud-init
-      #
-      # No managed K8s services (EKS) — all k3s/k8s managed by NixOS.
+      # Security invariants (enforced by this backend):
+      # - NO wildcard IAM actions — every action listed individually
+      # - NO public SSH or K8s API — restricted to VPC CIDR
+      # - prevent_destroy on stateful resources (IAM role, VPC)
+      # - IMDSv2 required on all instances (SSRF protection)
+      # - Session duration capped at 1 hour
+      # - 5 least-privilege IAM policies (ECR, S3, CloudWatch, EC2, SSM)
+      # - CloudWatch log group with 30-day retention
       module AwsNixos
         include Base
         extend NixosBase
@@ -48,7 +49,7 @@ module Pangea
                   "Original error: #{e.message}"
           end
 
-          # Create VPC + subnets + security groups
+          # ── Phase 1: Network ─────────────────────────────────────────
           def create_network(ctx, name, config, tags)
             network = {}
 
@@ -58,19 +59,27 @@ module Pangea
               cidr_block: vpc_cidr,
               enable_dns_hostnames: true,
               enable_dns_support: true,
-              tags: tags.merge(Name: "#{name}-vpc")
+              tags: tags.merge(Name: "#{name}-vpc"),
+              lifecycle: { prevent_destroy: true }
             )
 
-            # Internet gateway for public access
             network[:igw] = ctx.aws_internet_gateway(
               :"#{name}_igw",
               vpc_id: network[:vpc].id,
               tags: tags.merge(Name: "#{name}-igw")
             )
 
+            # Route table for IGW (required for internet access)
+            network[:route_table] = ctx.aws_route_table(
+              :"#{name}_rt",
+              vpc_id: network[:vpc].id,
+              route: [{ cidr_block: '0.0.0.0/0', gateway_id: network[:igw].id }],
+              tags: tags.merge(Name: "#{name}-rt")
+            )
+
             # Subnets in 2 AZs
             %w[a b].each_with_index do |az_suffix, idx|
-              network[:"subnet_#{az_suffix}"] = ctx.aws_subnet(
+              subnet = ctx.aws_subnet(
                 :"#{name}_subnet_#{az_suffix}",
                 vpc_id: network[:vpc].id,
                 cidr_block: "10.0.#{idx}.0/24",
@@ -78,15 +87,23 @@ module Pangea
                 map_public_ip_on_launch: true,
                 tags: tags.merge(Name: "#{name}-subnet-#{az_suffix}")
               )
+              network[:"subnet_#{az_suffix}"] = subnet
+
+              # Associate subnet with route table
+              ctx.aws_route_table_association(
+                :"#{name}_rta_#{az_suffix}",
+                subnet_id: subnet.id,
+                route_table_id: network[:route_table].id
+              )
             end
 
-            # Security group for k3s/k8s nodes
+            # Security group — K3s ports restricted to VPC CIDR
             network[:sg] = ctx.aws_security_group(
               :"#{name}_sg",
               name: "#{name}-k8s-nodes",
               description: "Security group for #{name} k8s/k3s NixOS nodes",
               vpc_id: network[:vpc].id,
-              ingress: aws_security_group_rules(config.distribution),
+              ingress: aws_security_group_rules(config, vpc_cidr),
               egress: [{ from_port: 0, to_port: 0, protocol: '-1', cidr_blocks: ['0.0.0.0/0'] }],
               tags: tags.merge(Name: "#{name}-sg")
             )
@@ -94,11 +111,15 @@ module Pangea
             network
           end
 
-          # SSH key pair for EC2 instances — no IAM roles needed for NixOS
+          # ── Phase 2: IAM (least-privilege) ───────────────────────────
           def create_iam(ctx, name, config, tags)
             iam = {}
+            account_id = config.tags[:account_id] || config.tags['account_id']
+            region = config.region
+            etcd_bucket = config.tags[:etcd_backup_bucket] || config.tags['etcd_backup_bucket'] || "#{name}-etcd-backups"
+            log_group = "/k3s/#{name}"
 
-            # Instance profile for EC2 (minimal — no EKS policies needed)
+            # EC2-only assume-role trust policy
             assume_role_policy = {
               Version: '2012-10-17',
               Statement: [{
@@ -108,29 +129,177 @@ module Pangea
               }]
             }.to_json
 
-            iam[:instance_role] = ctx.aws_iam_role(
-              :"#{name}_instance_role",
-              name: "#{name}-nixos-instance-role",
+            iam[:role] = ctx.aws_iam_role(
+              :"#{name}_node_role",
+              name: "#{name}-node-role",
+              description: "Least-privilege role for #{name} K3s cluster nodes",
               assume_role_policy: assume_role_policy,
-              tags: tags.merge(Name: "#{name}-instance-role")
+              max_session_duration: 3600,
+              tags: tags.merge(Name: "#{name}-node-role"),
+              lifecycle: { prevent_destroy: true }
             )
 
             iam[:instance_profile] = ctx.aws_iam_instance_profile(
-              :"#{name}_instance_profile",
-              name: "#{name}-nixos-instance-profile",
-              role: iam[:instance_role].name
+              :"#{name}_node_profile",
+              name: "#{name}-node-profile",
+              role: iam[:role].ref(:name),
+              tags: tags.merge(Name: "#{name}-node-profile")
+            )
+
+            # ── Policy: ECR Read-Only ────────────────────────────────
+            ecr_resource = if account_id
+                             ["arn:aws:ecr:#{region}:#{account_id}:repository/*"]
+                           else
+                             ['*']
+                           end
+
+            iam[:ecr_policy] = ctx.aws_iam_policy(
+              :"#{name}_ecr_read",
+              name: "#{name}-ecr-read",
+              description: "ECR read-only for #{name} K3s nodes",
+              policy: {
+                Version: '2012-10-17',
+                Statement: [{
+                  Sid: 'ECRReadOnly',
+                  Effect: 'Allow',
+                  Action: %w[
+                    ecr:GetDownloadUrlForLayer
+                    ecr:BatchGetImage
+                    ecr:BatchCheckLayerAvailability
+                    ecr:DescribeRepositories
+                    ecr:ListImages
+                  ],
+                  Resource: ecr_resource,
+                }, {
+                  Sid: 'ECRAuth',
+                  Effect: 'Allow',
+                  Action: ['ecr:GetAuthorizationToken'],
+                  Resource: ['*'],
+                }],
+              },
+              tags: tags,
+            )
+            ctx.aws_iam_role_policy_attachment(:"#{name}_ecr_read",
+                                              role: iam[:role].ref(:name), policy_arn: iam[:ecr_policy].ref(:arn))
+
+            # ── Policy: S3 Etcd Backup ───────────────────────────────
+            iam[:etcd_policy] = ctx.aws_iam_policy(
+              :"#{name}_etcd_backup",
+              name: "#{name}-etcd-backup",
+              description: "S3 etcd backup access for #{name} K3s nodes",
+              policy: {
+                Version: '2012-10-17',
+                Statement: [{
+                  Sid: 'EtcdBackupReadWrite',
+                  Effect: 'Allow',
+                  Action: %w[s3:GetObject s3:PutObject s3:ListBucket],
+                  Resource: ["arn:aws:s3:::#{etcd_bucket}", "arn:aws:s3:::#{etcd_bucket}/*"],
+                }],
+              },
+              tags: tags,
+            )
+            ctx.aws_iam_role_policy_attachment(:"#{name}_etcd_backup",
+                                              role: iam[:role].ref(:name), policy_arn: iam[:etcd_policy].ref(:arn))
+
+            # ── Policy: CloudWatch Logs ──────────────────────────────
+            logs_resource = if account_id
+                              ["arn:aws:logs:#{region}:#{account_id}:log-group:#{log_group}:*"]
+                            else
+                              ['*']
+                            end
+
+            iam[:logs_policy] = ctx.aws_iam_policy(
+              :"#{name}_logs",
+              name: "#{name}-cloudwatch-logs",
+              description: "CloudWatch log access for #{name} K3s nodes",
+              policy: {
+                Version: '2012-10-17',
+                Statement: [{
+                  Sid: 'CloudWatchLogs',
+                  Effect: 'Allow',
+                  Action: %w[logs:CreateLogStream logs:PutLogEvents logs:DescribeLogStreams],
+                  Resource: logs_resource,
+                }],
+              },
+              tags: tags,
+            )
+            ctx.aws_iam_role_policy_attachment(:"#{name}_logs",
+                                              role: iam[:role].ref(:name), policy_arn: iam[:logs_policy].ref(:arn))
+
+            # ── Policy: EC2 Describe (node discovery) ────────────────
+            ec2_statement = {
+              Sid: 'EC2Describe',
+              Effect: 'Allow',
+              Action: %w[
+                ec2:DescribeInstances
+                ec2:DescribeTags
+                ec2:DescribeVolumes
+                ec2:DescribeNetworkInterfaces
+                ec2:DescribeSecurityGroups
+                ec2:DescribeSubnets
+                ec2:DescribeVpcs
+              ],
+              Resource: ['*'],
+            }
+            ec2_statement[:Condition] = { StringEquals: { 'ec2:Region': region } } if region
+
+            iam[:ec2_policy] = ctx.aws_iam_policy(
+              :"#{name}_ec2_describe",
+              name: "#{name}-ec2-describe",
+              description: "EC2 read-only metadata for #{name} K3s nodes",
+              policy: { Version: '2012-10-17', Statement: [ec2_statement] },
+              tags: tags,
+            )
+            ctx.aws_iam_role_policy_attachment(:"#{name}_ec2_describe",
+                                              role: iam[:role].ref(:name), policy_arn: iam[:ec2_policy].ref(:arn))
+
+            # ── Policy: SSM Session Manager ──────────────────────────
+            iam[:ssm_policy] = ctx.aws_iam_policy(
+              :"#{name}_ssm",
+              name: "#{name}-ssm-session",
+              description: "SSM session access for #{name} K3s nodes",
+              policy: {
+                Version: '2012-10-17',
+                Statement: [{
+                  Sid: 'SSMCore',
+                  Effect: 'Allow',
+                  Action: %w[
+                    ssm:UpdateInstanceInformation
+                    ssmmessages:CreateControlChannel
+                    ssmmessages:CreateDataChannel
+                    ssmmessages:OpenControlChannel
+                    ssmmessages:OpenDataChannel
+                  ],
+                  Resource: ['*'],
+                }, {
+                  Sid: 'SSMSessionLogs',
+                  Effect: 'Allow',
+                  Action: ['s3:PutObject'],
+                  Resource: ["arn:aws:s3:::#{etcd_bucket}/ssm-logs/*"],
+                }],
+              },
+              tags: tags,
+            )
+            ctx.aws_iam_role_policy_attachment(:"#{name}_ssm",
+                                              role: iam[:role].ref(:name), policy_arn: iam[:ssm_policy].ref(:arn))
+
+            # ── CloudWatch Log Group ─────────────────────────────────
+            iam[:log_group] = ctx.aws_cloudwatch_log_group(
+              :"#{name}_logs",
+              name: log_group,
+              retention_in_days: 30,
+              tags: tags.merge(Name: "#{name}-logs")
             )
 
             iam
           end
 
-          # Create control plane EC2 instances (static, no ASG)
+          # ── Phase 3: Cluster (control plane) ─────────────────────────
           def create_cluster(ctx, name, config, result, tags)
-            # Create firewall (security group) via create_network already done
             nixos_create_cluster(ctx, name, config, result, tags)
           end
 
-          # Create worker node pool via Launch Template + Auto Scaling Group
+          # ── Phase 4: Node pools (workers) ────────────────────────────
           def create_node_pool(ctx, name, cluster_ref, pool_config, tags)
             nixos_create_node_pool(ctx, name, cluster_ref, pool_config, tags)
           end
@@ -161,7 +330,17 @@ module Pangea
               key_name: config.key_pair,
               iam_instance_profile: result.iam&.dig(:instance_profile)&.name,
               user_data: cloud_init,
-              root_block_device: { volume_size: system_pool.disk_size_gb, volume_type: 'gp3' },
+              root_block_device: {
+                volume_size: system_pool.disk_size_gb,
+                volume_type: 'gp3',
+                encrypted: true,
+              },
+              metadata_options: {
+                http_endpoint: 'enabled',
+                http_tokens: 'required',
+                http_put_response_hop_limit: 1,
+                instance_metadata_tags: 'enabled',
+              },
               tags: tags.merge(
                 Name: "#{name}-cp-#{index}",
                 Role: 'control-plane',
@@ -174,7 +353,6 @@ module Pangea
             pool_name = :"#{name}_#{pool_config.name}"
             instance_type = pool_config.instance_types.first
 
-            # Launch Template
             lt = ctx.aws_launch_template(
               :"#{pool_name}_lt",
               name: "#{name}-#{pool_config.name}-lt",
@@ -182,9 +360,19 @@ module Pangea
               instance_type: instance_type,
               key_name: tags[:KeyPair],
               user_data: cloud_init,
+              metadata_options: {
+                http_endpoint: 'enabled',
+                http_tokens: 'required',
+                http_put_response_hop_limit: 1,
+                instance_metadata_tags: 'enabled',
+              },
               block_device_mappings: [{
                 device_name: '/dev/xvda',
-                ebs: { volume_size: pool_config.disk_size_gb, volume_type: 'gp3' }
+                ebs: {
+                  volume_size: pool_config.disk_size_gb,
+                  volume_type: 'gp3',
+                  encrypted: true,
+                }
               }],
               tag_specifications: [{
                 resource_type: 'instance',
@@ -196,17 +384,13 @@ module Pangea
               }]
             )
 
-            # Auto Scaling Group
             ctx.aws_autoscaling_group(
               :"#{pool_name}_asg",
               name: "#{name}-#{pool_config.name}-asg",
               min_size: pool_config.min_size,
               max_size: pool_config.max_size,
               desired_capacity: pool_config.effective_desired_size,
-              launch_template: {
-                id: lt.id,
-                version: '$Latest'
-              },
+              launch_template: { id: lt.id, version: '$Latest' },
               vpc_zone_identifier: tags[:SubnetIds] || [],
               health_check_type: 'EC2',
               health_check_grace_period: 300,
@@ -220,13 +404,25 @@ module Pangea
 
           private
 
-          def aws_security_group_rules(distribution)
-            base_firewall_ports(distribution).map do |_name, port_def|
+          # Security group rules — private ports restricted to VPC CIDR,
+          # SSH restricted to VPC, only HTTP/HTTPS public for ingress.
+          def aws_security_group_rules(config, vpc_cidr)
+            ssh_cidr = config.tags[:ssh_cidr] || config.tags['ssh_cidr'] || vpc_cidr
+            api_cidr = config.tags[:api_cidr] || config.tags['api_cidr'] || vpc_cidr
+
+            base_firewall_ports(config.distribution).map do |port_name, port_def|
+              cidr = case port_name
+                     when :ssh then [ssh_cidr]
+                     when :api then [api_cidr]
+                     when :http, :https then ['0.0.0.0/0']
+                     else [vpc_cidr]
+                     end
+
               {
                 from_port: port_range_start(port_def[:port]),
                 to_port: port_range_end(port_def[:port]),
                 protocol: port_def[:protocol].to_s,
-                cidr_blocks: port_def[:public] ? ['0.0.0.0/0'] : ['10.0.0.0/8'],
+                cidr_blocks: cidr,
                 description: port_def[:description]
               }
             end

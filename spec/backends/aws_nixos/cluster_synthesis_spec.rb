@@ -20,7 +20,13 @@ RSpec.describe Pangea::Kubernetes::Backends::AwsNixos do
         { name: :system, instance_types: ['t3.large'], min_size: 3, max_size: 3 },
         { name: :workers, instance_types: ['c5.xlarge'], min_size: 2, max_size: 20 }
       ],
-      network: { vpc_cidr: '10.0.0.0/16' }
+      network: { vpc_cidr: '10.0.0.0/16' },
+      tags: {
+        account_id: '123456789012',
+        etcd_backup_bucket: 'production-etcd-backups',
+        ssh_cidr: '10.0.0.0/8',
+        api_cidr: '10.0.0.0/8',
+      }
     )
   end
 
@@ -33,11 +39,12 @@ RSpec.describe Pangea::Kubernetes::Backends::AwsNixos do
   end
 
   describe '.create_network' do
-    it 'creates VPC, IGW, subnets, and security group' do
+    it 'creates VPC, IGW, route table, subnets, and security group' do
       result = described_class.create_network(ctx, :production, cluster_config, base_tags)
 
       expect(result).to have_key(:vpc)
       expect(result).to have_key(:igw)
+      expect(result).to have_key(:route_table)
       expect(result).to have_key(:subnet_a)
       expect(result).to have_key(:subnet_b)
       expect(result).to have_key(:sg)
@@ -50,14 +57,53 @@ RSpec.describe Pangea::Kubernetes::Backends::AwsNixos do
       api_rule = sg[:attrs][:ingress].find { |r| r[:description] == 'K8s API' }
       expect(api_rule[:from_port]).to eq(6443)
     end
+
+    it 'protects VPC with prevent_destroy' do
+      described_class.create_network(ctx, :production, cluster_config, base_tags)
+      vpc = ctx.find_resource(:aws_vpc, :production_vpc)
+      expect(vpc[:attrs][:lifecycle]).to eq({ prevent_destroy: true })
+    end
   end
 
   describe '.create_iam' do
-    it 'creates instance role and profile' do
-      result = described_class.create_iam(ctx, :production, cluster_config, base_tags)
+    let(:iam_result) { described_class.create_iam(ctx, :production, cluster_config, base_tags) }
 
-      expect(result).to have_key(:instance_role)
-      expect(result).to have_key(:instance_profile)
+    it 'creates node role and instance profile' do
+      expect(iam_result).to have_key(:role)
+      expect(iam_result).to have_key(:instance_profile)
+    end
+
+    it 'creates 5 least-privilege IAM policies' do
+      expect(iam_result).to have_key(:ecr_policy)
+      expect(iam_result).to have_key(:etcd_policy)
+      expect(iam_result).to have_key(:logs_policy)
+      expect(iam_result).to have_key(:ec2_policy)
+      expect(iam_result).to have_key(:ssm_policy)
+    end
+
+    it 'creates CloudWatch log group' do
+      expect(iam_result).to have_key(:log_group)
+    end
+
+    it 'sets max_session_duration to 3600' do
+      iam_result # trigger creation
+      roles = ctx.created_resources.select { |r| r[:type] == 'aws_iam_role' }
+      role = roles.first
+      expect(role[:attrs][:max_session_duration]).to eq(3600)
+    end
+
+    it 'protects IAM role with prevent_destroy' do
+      iam_result
+      roles = ctx.created_resources.select { |r| r[:type] == 'aws_iam_role' }
+      role = roles.first
+      expect(role[:attrs][:lifecycle]).to eq({ prevent_destroy: true })
+    end
+
+    it 'tags instance profile' do
+      iam_result
+      profiles = ctx.created_resources.select { |r| r[:type] == 'aws_iam_instance_profile' }
+      ip = profiles.first
+      expect(ip[:attrs][:tags]).to include(:Name)
     end
   end
 
@@ -106,6 +152,22 @@ RSpec.describe Pangea::Kubernetes::Backends::AwsNixos do
       expect(cp_1[:attrs][:user_data]).to include('"cluster_init":false')
     end
 
+    it 'enforces IMDSv2 on control plane instances' do
+      described_class.create_cluster(ctx, :production, cluster_config, arch_result, base_tags)
+
+      cp_0 = ctx.find_resource(:aws_instance, :production_cp_0)
+      metadata = cp_0[:attrs][:metadata_options]
+      expect(metadata[:http_tokens]).to eq('required')
+      expect(metadata[:http_put_response_hop_limit]).to eq(1)
+    end
+
+    it 'encrypts root volumes' do
+      described_class.create_cluster(ctx, :production, cluster_config, arch_result, base_tags)
+
+      cp_0 = ctx.find_resource(:aws_instance, :production_cp_0)
+      expect(cp_0[:attrs][:root_block_device][:encrypted]).to be true
+    end
+
     it 'supports vanilla kubernetes distribution' do
       k8s_config = Pangea::Kubernetes::Types::ClusterConfig.new(
         backend: :aws_nixos, kubernetes_version: '1.34', region: 'us-east-1',
@@ -124,7 +186,6 @@ RSpec.describe Pangea::Kubernetes::Backends::AwsNixos do
       user_data = cp_0[:attrs][:user_data]
       expect(user_data).to include('"distribution":"kubernetes"')
       expect(user_data).to include('"profile":"calico-standard"')
-      # vanilla k8s uses 'control-plane' role, not 'server'
       expect(user_data).to include('"role":"control-plane"')
     end
   end
@@ -162,6 +223,22 @@ RSpec.describe Pangea::Kubernetes::Backends::AwsNixos do
 
       lt = ctx.find_resource(:aws_launch_template, :production_workers_lt)
       expect(lt[:attrs][:user_data]).to include('"role":"agent"')
+    end
+
+    it 'enforces IMDSv2 on worker launch template' do
+      described_class.create_node_pool(ctx, :production, cluster_ref, pool_config, base_tags)
+
+      lt = ctx.find_resource(:aws_launch_template, :production_workers_lt)
+      metadata = lt[:attrs][:metadata_options]
+      expect(metadata[:http_tokens]).to eq('required')
+    end
+
+    it 'encrypts worker volumes' do
+      described_class.create_node_pool(ctx, :production, cluster_ref, pool_config, base_tags)
+
+      lt = ctx.find_resource(:aws_launch_template, :production_workers_lt)
+      ebs = lt[:attrs][:block_device_mappings].first[:ebs]
+      expect(ebs[:encrypted]).to be true
     end
   end
 end
