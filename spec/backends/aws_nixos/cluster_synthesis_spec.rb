@@ -173,7 +173,8 @@ RSpec.describe Pangea::Kubernetes::Backends::AwsNixos do
         backend: :aws_nixos, kubernetes_version: '1.34', region: 'us-east-1',
         distribution: :kubernetes, profile: 'calico-standard',
         node_pools: [{ name: :system, instance_types: ['t3.large'] }],
-        network: { vpc_cidr: '10.0.0.0/16' }
+        network: { vpc_cidr: '10.0.0.0/16' },
+        tags: { account_id: '123456789012' }
       )
 
       result = Pangea::Kubernetes::Architecture::ArchitectureResult.new(:test, k8s_config)

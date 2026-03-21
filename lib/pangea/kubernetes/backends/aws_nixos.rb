@@ -49,9 +49,38 @@ module Pangea
                   "Original error: #{e.message}"
           end
 
-          # ── Phase 1: Network ─────────────────────────────────────────
+          # ── Phase 1: Network + Storage ────────────────────────────────
           def create_network(ctx, name, config, tags)
+            validate_cidr_restrictions!(config)
             network = {}
+
+            # S3 bucket for etcd backups (versioned, encrypted, no public access)
+            etcd_bucket = config.tags[:etcd_backup_bucket] || config.tags['etcd_backup_bucket'] || "#{name}-etcd-backups"
+            network[:etcd_bucket] = ctx.aws_s3_bucket(
+              :"#{name}_etcd",
+              bucket: etcd_bucket,
+              tags: tags.merge(Name: etcd_bucket)
+            )
+            ctx.aws_s3_bucket_versioning(
+              :"#{name}_etcd_versioning",
+              bucket: network[:etcd_bucket].id,
+              versioning_configuration: { status: 'Enabled' }
+            )
+            ctx.aws_s3_bucket_encryption(
+              :"#{name}_etcd_encryption",
+              bucket: network[:etcd_bucket].id,
+              server_side_encryption_configuration: {
+                rule: [{ apply_server_side_encryption_by_default: { sse_algorithm: 'aws:kms' }, bucket_key_enabled: true }],
+              }
+            )
+            ctx.aws_s3_bucket_public_access_block(
+              :"#{name}_etcd_public_access",
+              bucket: network[:etcd_bucket].id,
+              block_public_acls: true,
+              block_public_policy: true,
+              ignore_public_acls: true,
+              restrict_public_buckets: true
+            )
 
             vpc_cidr = config.network&.vpc_cidr || '10.0.0.0/16'
             network[:vpc] = ctx.aws_vpc(
@@ -115,6 +144,11 @@ module Pangea
           def create_iam(ctx, name, config, tags)
             iam = {}
             account_id = config.tags[:account_id] || config.tags['account_id']
+            if account_id.nil? || account_id == 'CHANGEME'
+              raise ArgumentError,
+                    "account_id is required for IAM policy scoping. " \
+                    "Set ACCOUNT_ID env var or pass account_id in tags."
+            end
             region = config.region
             etcd_bucket = config.tags[:etcd_backup_bucket] || config.tags['etcd_backup_bucket'] || "#{name}-etcd-backups"
             log_group = "/k3s/#{name}"
@@ -147,11 +181,7 @@ module Pangea
             )
 
             # ── Policy: ECR Read-Only ────────────────────────────────
-            ecr_resource = if account_id
-                             ["arn:aws:ecr:#{region}:#{account_id}:repository/*"]
-                           else
-                             ['*']
-                           end
+            ecr_resource = ["arn:aws:ecr:#{region}:#{account_id}:repository/*"]
 
             iam[:ecr_policy] = ctx.aws_iam_policy(
               :"#{name}_ecr_read",
@@ -202,11 +232,7 @@ module Pangea
                                               role: iam[:role].ref(:name), policy_arn: iam[:etcd_policy].ref(:arn))
 
             # ── Policy: CloudWatch Logs ──────────────────────────────
-            logs_resource = if account_id
-                              ["arn:aws:logs:#{region}:#{account_id}:log-group:#{log_group}:*"]
-                            else
-                              ['*']
-                            end
+            logs_resource = ["arn:aws:logs:#{region}:#{account_id}:log-group:#{log_group}:*"]
 
             iam[:logs_policy] = ctx.aws_iam_policy(
               :"#{name}_logs",
@@ -241,7 +267,7 @@ module Pangea
               ],
               Resource: ['*'],
             }
-            ec2_statement[:Condition] = { StringEquals: { 'ec2:Region': region } } if region
+            ec2_statement[:Condition] = { StringEquals: { 'ec2:Region': region } }
 
             iam[:ec2_policy] = ctx.aws_iam_policy(
               :"#{name}_ec2_describe",
@@ -403,6 +429,18 @@ module Pangea
           end
 
           private
+
+          # Reject 0.0.0.0/0 for SSH and K8s API — these must never be public.
+          def validate_cidr_restrictions!(config)
+            ssh_cidr = config.tags[:ssh_cidr] || config.tags['ssh_cidr']
+            api_cidr = config.tags[:api_cidr] || config.tags['api_cidr']
+            if ssh_cidr == '0.0.0.0/0'
+              raise ArgumentError, "ssh_cidr must not be 0.0.0.0/0 — SSH must not be public"
+            end
+            if api_cidr == '0.0.0.0/0'
+              raise ArgumentError, "api_cidr must not be 0.0.0.0/0 — K8s API must not be public"
+            end
+          end
 
           # Security group rules — private ports restricted to VPC CIDR,
           # SSH restricted to VPC, only HTTP/HTTPS public for ingress.
