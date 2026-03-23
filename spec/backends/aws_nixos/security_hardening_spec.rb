@@ -300,9 +300,9 @@ RSpec.describe 'AwsNixos security hardening' do
     end
   end
 
-  # ── Instance Hardening ───────────────────────────────────────────
+  # ── Compute Hardening (Launch Template + ASG + NLB) ─────────────
 
-  describe 'instance hardening' do
+  describe 'compute hardening' do
     let(:arch_result) do
       r = Pangea::Kubernetes::Architecture::ArchitectureResult.new(:kazoku, config)
       r.network = network
@@ -314,24 +314,36 @@ RSpec.describe 'AwsNixos security hardening' do
       Pangea::Kubernetes::Backends::AwsNixos.create_cluster(ctx, :kazoku, config, arch_result, base_tags)
     end
 
-    it 'requires IMDSv2 (http_tokens: required)' do
-      cp = ctx.find_resource(:aws_instance, :kazoku_cp_0)
-      expect(cp[:attrs][:metadata_options][:http_tokens]).to eq('required')
+    it 'uses no raw EC2 instances (all compute via ASG)' do
+      instances = ctx.created_resources.select { |r| r[:type] == 'aws_instance' }
+      expect(instances).to be_empty
     end
 
-    it 'limits IMDS hop count to 1' do
-      cp = ctx.find_resource(:aws_instance, :kazoku_cp_0)
-      expect(cp[:attrs][:metadata_options][:http_put_response_hop_limit]).to eq(1)
+    it 'requires IMDSv2 (http_tokens: required) on launch template' do
+      lt = ctx.find_resource(:aws_launch_template, :kazoku_cp_lt)
+      expect(lt[:attrs][:metadata_options][:http_tokens]).to eq('required')
     end
 
-    it 'encrypts root block device' do
-      cp = ctx.find_resource(:aws_instance, :kazoku_cp_0)
-      expect(cp[:attrs][:root_block_device][:encrypted]).to be(true)
+    it 'limits IMDS hop count to 1 on launch template' do
+      lt = ctx.find_resource(:aws_launch_template, :kazoku_cp_lt)
+      expect(lt[:attrs][:metadata_options][:http_put_response_hop_limit]).to eq(1)
     end
 
-    it 'uses gp3 volume type' do
-      cp = ctx.find_resource(:aws_instance, :kazoku_cp_0)
-      expect(cp[:attrs][:root_block_device][:volume_type]).to eq('gp3')
+    it 'encrypts volumes via launch template' do
+      lt = ctx.find_resource(:aws_launch_template, :kazoku_cp_lt)
+      ebs = lt[:attrs][:block_device_mappings].first[:ebs]
+      expect(ebs[:encrypted]).to be(true)
+    end
+
+    it 'uses gp3 volume type via launch template' do
+      lt = ctx.find_resource(:aws_launch_template, :kazoku_cp_lt)
+      ebs = lt[:attrs][:block_device_mappings].first[:ebs]
+      expect(ebs[:volume_type]).to eq('gp3')
+    end
+
+    it 'NLB is internal (not internet-facing)' do
+      nlb = ctx.find_resource(:aws_lb, :kazoku_cp_nlb)
+      expect(nlb[:attrs][:internal]).to be true
     end
   end
 

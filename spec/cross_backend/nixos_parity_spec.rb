@@ -16,7 +16,8 @@ RSpec.describe 'NixOS backend parity' do
           ami_id: 'ami-test', key_pair: 'test-key',
           node_pools: [{ name: :system, instance_types: ['t3.large'] }],
           network: { vpc_cidr: '10.0.0.0/16' },
-          nixos: { k3s: { cluster_cidr: '10.42.0.0/16', disable: %w[traefik] } }
+          nixos: { k3s: { cluster_cidr: '10.42.0.0/16', disable: %w[traefik] } },
+          tags: { account_id: '123456789012' }
         ),
         gcp_nixos: Pangea::Kubernetes::Types::ClusterConfig.new(
           backend: :gcp_nixos, kubernetes_version: '1.34', region: 'us-central1',
@@ -65,8 +66,10 @@ RSpec.describe 'NixOS backend parity' do
 
         backend.create_cluster(ctx, :test, config, result, tags)
 
-        # Find the control plane instance's user_data/cloud-init
-        cp_resources = ctx.created_resources.select { |r| r[:name] == :test_cp_0 }
+        # Find the control plane resource's user_data/cloud-init
+        # ASG-based backends (aws_nixos) create a launch template, others create an instance
+        cp_name = (name == :aws_nixos) ? :test_cp_lt : :test_cp_0
+        cp_resources = ctx.created_resources.select { |r| r[:name] == cp_name }
         cp = cp_resources.first
         cloud_init = cp[:attrs][:user_data] || cp[:attrs][:custom_data] || cp[:attrs].dig(:metadata, 'user-data')
 

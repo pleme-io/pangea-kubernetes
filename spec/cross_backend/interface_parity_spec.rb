@@ -148,12 +148,15 @@ RSpec.describe 'Cross-Backend Interface Parity' do
     let(:tags) { { ManagedBy: 'Pangea' } }
 
     it 'all backends return a hash from create_iam' do
-      config = Pangea::Kubernetes::Types::ClusterConfig.new(
-        backend: :aws, region: 'us-east-1',
-        node_pools: [{ name: :system, instance_types: ['t3.large'] }]
-      )
-
       all_backends.each do |backend|
+        config_attrs = {
+          backend: backend.backend_name, region: 'us-east-1',
+          node_pools: [{ name: :system, instance_types: ['t3.large'] }]
+        }
+        # aws_nixos requires account_id in tags for IAM policy scoping
+        config_attrs[:tags] = { account_id: '123456789012' } if backend.backend_name == :aws_nixos
+
+        config = Pangea::Kubernetes::Types::ClusterConfig.new(config_attrs)
         result = backend.create_iam(create_mock_context, :test, config, tags)
         expect(result).to be_a(Hash), "#{backend.backend_name} create_iam should return Hash"
       end
@@ -187,11 +190,15 @@ RSpec.describe 'Cross-Backend Interface Parity' do
 
         backend.create_cluster(ctx, :test, config, arch_result, { ManagedBy: 'Pangea' })
 
-        # Find the control-plane VM resource (exact name match, not NIC/template)
-        cp_0 = ctx.created_resources.find { |r| r[:name] == :test_cp_0 }
-        expect(cp_0).not_to be_nil, "#{backend.backend_name} should create test_cp_0 resource"
+        # Find the control-plane resource — ASG-based backends use launch template, others use instance
+        cp_resource = if backend.backend_name == :aws_nixos
+          ctx.created_resources.find { |r| r[:name] == :test_cp_lt }
+        else
+          ctx.created_resources.find { |r| r[:name] == :test_cp_0 }
+        end
+        expect(cp_resource).not_to be_nil, "#{backend.backend_name} should create control plane resource"
 
-        user_data = cp_0[:attrs][:user_data] || cp_0[:attrs][:custom_data] || cp_0[:attrs].dig(:metadata, 'user-data')
+        user_data = cp_resource[:attrs][:user_data] || cp_resource[:attrs][:custom_data] || cp_resource[:attrs].dig(:metadata, 'user-data')
         expect(user_data).to include('"distribution":"k3s"'),
           "#{backend.backend_name} should include distribution in cloud-init"
         expect(user_data).to include('"profile":"cilium-standard"'),

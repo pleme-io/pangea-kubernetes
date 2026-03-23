@@ -117,55 +117,110 @@ RSpec.describe Pangea::Kubernetes::Backends::AwsNixos do
       r
     end
 
-    it 'creates EC2 instances for control plane (not EKS)' do
+    it 'creates LT + ASG + NLB for control plane (not EC2 instances or EKS)' do
       described_class.create_cluster(ctx, :production, cluster_config, arch_result, base_tags)
 
+      expect(ctx.find_resource(:aws_launch_template, :production_cp_lt)).not_to be_nil
+      expect(ctx.find_resource(:aws_autoscaling_group, :production_cp_asg)).not_to be_nil
+      expect(ctx.find_resource(:aws_lb, :production_cp_nlb)).not_to be_nil
+      expect(ctx.find_resource(:aws_lb_target_group, :production_cp_tg)).not_to be_nil
+      expect(ctx.find_resource(:aws_lb_listener, :production_cp_listener)).not_to be_nil
+      expect(ctx.find_resource(:aws_autoscaling_attachment, :production_cp_asg_tg)).not_to be_nil
+
       instances = ctx.created_resources.select { |r| r[:type] == 'aws_instance' }
-      expect(instances.size).to eq(3) # min_size: 3
+      expect(instances).to be_empty
       expect(ctx.find_resource(:aws_eks_cluster, :production_cluster)).to be_nil
     end
 
-    it 'uses NixOS AMI' do
+    it 'uses NixOS AMI in launch template' do
       described_class.create_cluster(ctx, :production, cluster_config, arch_result, base_tags)
 
-      cp_0 = ctx.find_resource(:aws_instance, :production_cp_0)
-      expect(cp_0[:attrs][:ami]).to eq('ami-nixos-test')
+      lt = ctx.find_resource(:aws_launch_template, :production_cp_lt)
+      expect(lt[:attrs][:image_id]).to eq('ami-nixos-test')
     end
 
     it 'includes cloud-init with k3s distribution config' do
       described_class.create_cluster(ctx, :production, cluster_config, arch_result, base_tags)
 
-      cp_0 = ctx.find_resource(:aws_instance, :production_cp_0)
-      user_data = cp_0[:attrs][:user_data]
+      lt = ctx.find_resource(:aws_launch_template, :production_cp_lt)
+      user_data = lt[:attrs][:user_data]
       expect(user_data).to include('"distribution":"k3s"')
       expect(user_data).to include('"profile":"cilium-standard"')
       expect(user_data).to include('"cluster_init":true')
     end
 
-    it 'sets first node as cluster-init, rest as non-init' do
+    it 'enforces IMDSv2 on control plane launch template' do
       described_class.create_cluster(ctx, :production, cluster_config, arch_result, base_tags)
 
-      cp_0 = ctx.find_resource(:aws_instance, :production_cp_0)
-      cp_1 = ctx.find_resource(:aws_instance, :production_cp_1)
-
-      expect(cp_0[:attrs][:user_data]).to include('"cluster_init":true')
-      expect(cp_1[:attrs][:user_data]).to include('"cluster_init":false')
-    end
-
-    it 'enforces IMDSv2 on control plane instances' do
-      described_class.create_cluster(ctx, :production, cluster_config, arch_result, base_tags)
-
-      cp_0 = ctx.find_resource(:aws_instance, :production_cp_0)
-      metadata = cp_0[:attrs][:metadata_options]
+      lt = ctx.find_resource(:aws_launch_template, :production_cp_lt)
+      metadata = lt[:attrs][:metadata_options]
       expect(metadata[:http_tokens]).to eq('required')
       expect(metadata[:http_put_response_hop_limit]).to eq(1)
     end
 
-    it 'encrypts root volumes' do
+    it 'encrypts root volumes via launch template' do
       described_class.create_cluster(ctx, :production, cluster_config, arch_result, base_tags)
 
-      cp_0 = ctx.find_resource(:aws_instance, :production_cp_0)
-      expect(cp_0[:attrs][:root_block_device][:encrypted]).to be true
+      lt = ctx.find_resource(:aws_launch_template, :production_cp_lt)
+      ebs = lt[:attrs][:block_device_mappings].first[:ebs]
+      expect(ebs[:encrypted]).to be true
+    end
+
+    it 'creates internal NLB' do
+      described_class.create_cluster(ctx, :production, cluster_config, arch_result, base_tags)
+
+      nlb = ctx.find_resource(:aws_lb, :production_cp_nlb)
+      expect(nlb[:attrs][:internal]).to be true
+      expect(nlb[:attrs][:load_balancer_type]).to eq('network')
+    end
+
+    it 'creates NLB listener on TCP 6443' do
+      described_class.create_cluster(ctx, :production, cluster_config, arch_result, base_tags)
+
+      listener = ctx.find_resource(:aws_lb_listener, :production_cp_listener)
+      expect(listener[:attrs][:port]).to eq(6443)
+      expect(listener[:attrs][:protocol]).to eq('TCP')
+    end
+
+    it 'returns a ControlPlaneRef with ipv4_address delegating to NLB dns_name' do
+      ref = described_class.create_cluster(ctx, :production, cluster_config, arch_result, base_tags)
+
+      expect(ref).to be_a(Pangea::Kubernetes::Backends::AwsNixos::ControlPlaneRef)
+      expect(ref.ipv4_address).to eq(ref.nlb.dns_name)
+    end
+
+    it 'sets CP ASG min_size and desired_capacity from system pool min_size' do
+      # cluster_config has min_size: 3
+      described_class.create_cluster(ctx, :production, cluster_config, arch_result, base_tags)
+
+      asg = ctx.find_resource(:aws_autoscaling_group, :production_cp_asg)
+      expect(asg[:attrs][:min_size]).to eq(3)
+      expect(asg[:attrs][:desired_capacity]).to eq(3)
+      expect(asg[:attrs][:max_size]).to be >= 3
+    end
+
+    it 'NLB listener forwards to target group' do
+      described_class.create_cluster(ctx, :production, cluster_config, arch_result, base_tags)
+
+      listener = ctx.find_resource(:aws_lb_listener, :production_cp_listener)
+      action = listener[:attrs][:default_action].first
+      expect(action[:type]).to eq('forward')
+      expect(action[:target_group_arn]).not_to be_nil
+    end
+
+    it 'ASG attachment references correct ASG and target group' do
+      described_class.create_cluster(ctx, :production, cluster_config, arch_result, base_tags)
+
+      attachment = ctx.find_resource(:aws_autoscaling_attachment, :production_cp_asg_tg)
+      expect(attachment[:attrs][:autoscaling_group_name]).not_to be_nil
+      expect(attachment[:attrs][:lb_target_group_arn]).not_to be_nil
+    end
+
+    it 'adds resource-level tags to launch template' do
+      described_class.create_cluster(ctx, :production, cluster_config, arch_result, base_tags)
+
+      lt = ctx.find_resource(:aws_launch_template, :production_cp_lt)
+      expect(lt[:attrs][:tags]).to include(Name: 'production-cp-lt')
     end
 
     it 'supports vanilla kubernetes distribution' do
@@ -183,8 +238,8 @@ RSpec.describe Pangea::Kubernetes::Backends::AwsNixos do
 
       described_class.create_cluster(ctx, :test, k8s_config, result, base_tags)
 
-      cp_0 = ctx.find_resource(:aws_instance, :test_cp_0)
-      user_data = cp_0[:attrs][:user_data]
+      lt = ctx.find_resource(:aws_launch_template, :test_cp_lt)
+      user_data = lt[:attrs][:user_data]
       expect(user_data).to include('"distribution":"kubernetes"')
       expect(user_data).to include('"profile":"calico-standard"')
       expect(user_data).to include('"role":"control-plane"')
@@ -192,7 +247,15 @@ RSpec.describe Pangea::Kubernetes::Backends::AwsNixos do
   end
 
   describe '.create_node_pool' do
-    let(:cluster_ref) { MockResourceRef.new('aws_instance', :production_cp_0) }
+    let(:network_result) { described_class.create_network(ctx, :production, cluster_config, base_tags) }
+    let(:iam_result) { described_class.create_iam(ctx, :production, cluster_config, base_tags) }
+    let(:arch_result) do
+      r = Pangea::Kubernetes::Architecture::ArchitectureResult.new(:production, cluster_config)
+      r.network = network_result
+      r.iam = iam_result
+      r
+    end
+    let(:cluster_ref) { described_class.create_cluster(ctx, :production, cluster_config, arch_result, base_tags) }
     let(:pool_config) do
       Pangea::Kubernetes::Types::NodePoolConfig.new(
         name: :workers, instance_types: ['c5.xlarge'],
@@ -240,6 +303,44 @@ RSpec.describe Pangea::Kubernetes::Backends::AwsNixos do
       lt = ctx.find_resource(:aws_launch_template, :production_workers_lt)
       ebs = lt[:attrs][:block_device_mappings].first[:ebs]
       expect(ebs[:encrypted]).to be true
+    end
+
+    it 'includes IAM instance profile on worker launch template' do
+      described_class.create_node_pool(ctx, :production, cluster_ref, pool_config, base_tags)
+
+      lt = ctx.find_resource(:aws_launch_template, :production_workers_lt)
+      expect(lt[:attrs][:iam_instance_profile]).not_to be_nil
+    end
+
+    it 'includes security group on worker launch template' do
+      described_class.create_node_pool(ctx, :production, cluster_ref, pool_config, base_tags)
+
+      lt = ctx.find_resource(:aws_launch_template, :production_workers_lt)
+      expect(lt[:attrs][:vpc_security_group_ids]).not_to be_empty
+    end
+
+    it 'uses resolved subnet IDs for worker ASG' do
+      described_class.create_node_pool(ctx, :production, cluster_ref, pool_config, base_tags)
+
+      asg = ctx.find_resource(:aws_autoscaling_group, :production_workers_asg)
+      subnet_ids = asg[:attrs][:vpc_zone_identifier]
+      expect(subnet_ids).not_to be_empty
+      expect(subnet_ids.length).to be >= 2
+    end
+
+    it 'worker cloud-init includes join_server from NLB' do
+      described_class.create_node_pool(ctx, :production, cluster_ref, pool_config, base_tags)
+
+      lt = ctx.find_resource(:aws_launch_template, :production_workers_lt)
+      expect(lt[:attrs][:user_data]).to include('"join_server"')
+      expect(lt[:attrs][:user_data]).to include(cluster_ref.ipv4_address.to_s)
+    end
+
+    it 'adds resource-level tags to worker launch template' do
+      described_class.create_node_pool(ctx, :production, cluster_ref, pool_config, base_tags)
+
+      lt = ctx.find_resource(:aws_launch_template, :production_workers_lt)
+      expect(lt[:attrs][:tags]).to include(Name: 'production-workers-lt')
     end
   end
 end

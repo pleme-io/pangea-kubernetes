@@ -35,6 +35,24 @@ module Pangea
         include Base
         extend NixosBase
 
+        ControlPlaneRef = Struct.new(
+          :nlb, :asg, :lt, :tg, :listener, :asg_tg,
+          :subnet_ids, :sg_id, :instance_profile_name, :ami_id, :key_name,
+          keyword_init: true
+        ) do
+          def ipv4_address
+            nlb.dns_name
+          end
+
+          def id
+            nlb.id
+          end
+
+          def arn
+            nlb.arn
+          end
+        end
+
         class << self
           def backend_name = :aws_nixos
           def managed_kubernetes? = false
@@ -320,9 +338,118 @@ module Pangea
             iam
           end
 
-          # ── Phase 3: Cluster (control plane) ─────────────────────────
+          # ── Phase 3: Cluster (control plane via LT+ASG+NLB) ────────────
           def create_cluster(ctx, name, config, result, tags)
-            nixos_create_cluster(ctx, name, config, result, tags)
+            system_pool = config.system_node_pool
+            instance_type = system_pool.instance_types.first
+            ami_id = config.ami_id || config.nixos&.image_id || 'ami-nixos-latest'
+            subnet_ids = resolve_subnet_ids(config, result)
+            sg_id = result.network&.dig(:sg)&.id
+            instance_profile_name = result.iam&.dig(:instance_profile)&.name
+            key_name = config.key_pair
+
+            cloud_init = build_server_cloud_init(name, config, 0, result)
+
+            lt = ctx.aws_launch_template(
+              :"#{name}_cp_lt",
+              name: "#{name}-cp-lt",
+              image_id: ami_id,
+              instance_type: instance_type,
+              key_name: key_name,
+              user_data: cloud_init,
+              iam_instance_profile: instance_profile_name ? { name: instance_profile_name } : nil,
+              vpc_security_group_ids: sg_id ? [sg_id] : [],
+              metadata_options: {
+                http_endpoint: 'enabled',
+                http_tokens: 'required',
+                http_put_response_hop_limit: 1,
+                instance_metadata_tags: 'enabled',
+              },
+              block_device_mappings: [{
+                device_name: '/dev/xvda',
+                ebs: {
+                  volume_size: system_pool.disk_size_gb,
+                  volume_type: 'gp3',
+                  encrypted: true,
+                }
+              }],
+              tag_specifications: [{
+                resource_type: 'instance',
+                tags: tags.merge(
+                  Name: "#{name}-cp",
+                  Role: 'control-plane',
+                  Distribution: config.distribution.to_s
+                )
+              }],
+              tags: tags.merge(Name: "#{name}-cp-lt")
+            )
+
+            cp_desired = [system_pool.min_size, 1].max
+            max_cp = system_pool.max_size || system_pool.min_size || 1
+            asg = ctx.aws_autoscaling_group(
+              :"#{name}_cp_asg",
+              name: "#{name}-cp-asg",
+              min_size: cp_desired,
+              max_size: [max_cp, cp_desired].max,
+              desired_capacity: cp_desired,
+              launch_template: { id: lt.id, version: '$Latest' },
+              vpc_zone_identifier: subnet_ids,
+              health_check_type: 'EC2',
+              health_check_grace_period: 300,
+              tags: [
+                { key: 'Name', value: "#{name}-cp", propagate_at_launch: true },
+                { key: 'KubernetesCluster', value: name.to_s, propagate_at_launch: true },
+                { key: 'Role', value: 'control-plane', propagate_at_launch: true }
+              ]
+            )
+
+            nlb = ctx.aws_lb(
+              :"#{name}_cp_nlb",
+              name: "#{name}-cp-nlb",
+              internal: true,
+              load_balancer_type: 'network',
+              subnets: subnet_ids,
+              tags: tags.merge(Name: "#{name}-cp-nlb")
+            )
+
+            tg = ctx.aws_lb_target_group(
+              :"#{name}_cp_tg",
+              name: "#{name}-cp-tg",
+              port: 6443,
+              protocol: 'TCP',
+              vpc_id: result.network&.dig(:vpc)&.id,
+              target_type: 'instance',
+              health_check: {
+                protocol: 'TCP',
+                port: 6443,
+                healthy_threshold: 3,
+                unhealthy_threshold: 3,
+                interval: 30,
+              },
+              tags: tags.merge(Name: "#{name}-cp-tg")
+            )
+
+            listener = ctx.aws_lb_listener(
+              :"#{name}_cp_listener",
+              load_balancer_arn: nlb.arn,
+              port: 6443,
+              protocol: 'TCP',
+              default_action: [{ type: 'forward', target_group_arn: tg.arn }]
+            )
+
+            asg_tg = ctx.aws_autoscaling_attachment(
+              :"#{name}_cp_asg_tg",
+              autoscaling_group_name: asg.id,
+              lb_target_group_arn: tg.arn
+            )
+
+            ControlPlaneRef.new(
+              nlb: nlb, asg: asg, lt: lt, tg: tg,
+              listener: listener, asg_tg: asg_tg,
+              subnet_ids: subnet_ids, sg_id: sg_id,
+              instance_profile_name: instance_profile_name,
+              ami_id: ami_id, key_name: key_name
+            )
           end
 
           # ── Phase 4: Node pools (workers) ────────────────────────────
@@ -332,60 +459,26 @@ module Pangea
 
           # --- NixosBase template hooks ---
 
-          def create_compute_instance(ctx, name, config, result, cloud_init, index, tags)
-            system_pool = config.system_node_pool
-            instance_type = system_pool.instance_types.first
-            ami_id = config.ami_id || config.nixos&.image_id || 'ami-nixos-latest'
-
-            subnet_ids = if config.network&.subnet_ids&.any?
-                           config.network.subnet_ids
-                         elsif result.network
-                           result.network.select { |k, _| k.to_s.start_with?('subnet_') }.values.map(&:id)
-                         else
-                           []
-                         end
-
-            sg_id = result.network&.dig(:sg)&.id
-
-            ctx.aws_instance(
-              :"#{name}_cp_#{index}",
-              ami: ami_id,
-              instance_type: instance_type,
-              subnet_id: subnet_ids[index % subnet_ids.size],
-              vpc_security_group_ids: sg_id ? [sg_id] : [],
-              key_name: config.key_pair,
-              iam_instance_profile: result.iam&.dig(:instance_profile)&.name,
-              user_data: cloud_init,
-              root_block_device: {
-                volume_size: system_pool.disk_size_gb,
-                volume_type: 'gp3',
-                encrypted: true,
-              },
-              metadata_options: {
-                http_endpoint: 'enabled',
-                http_tokens: 'required',
-                http_put_response_hop_limit: 1,
-                instance_metadata_tags: 'enabled',
-              },
-              tags: tags.merge(
-                Name: "#{name}-cp-#{index}",
-                Role: 'control-plane',
-                Distribution: config.distribution.to_s
-              )
-            )
-          end
-
-          def create_worker_pool(ctx, name, _cluster_ref, pool_config, cloud_init, tags)
+          def create_worker_pool(ctx, name, cluster_ref, pool_config, cloud_init, tags)
             pool_name = :"#{name}_#{pool_config.name}"
             instance_type = pool_config.instance_types.first
+
+            # Read infra context from ControlPlaneRef (fixes missing IAM/SG/subnet bugs)
+            ami_id = cluster_ref.respond_to?(:ami_id) ? cluster_ref.ami_id : (tags[:AmiId] || 'ami-nixos-latest')
+            key_name = cluster_ref.respond_to?(:key_name) ? cluster_ref.key_name : tags[:KeyPair]
+            subnet_ids = cluster_ref.respond_to?(:subnet_ids) ? cluster_ref.subnet_ids : (tags[:SubnetIds] || [])
+            sg_id = cluster_ref.respond_to?(:sg_id) ? cluster_ref.sg_id : nil
+            instance_profile_name = cluster_ref.respond_to?(:instance_profile_name) ? cluster_ref.instance_profile_name : nil
 
             lt = ctx.aws_launch_template(
               :"#{pool_name}_lt",
               name: "#{name}-#{pool_config.name}-lt",
-              image_id: tags[:AmiId] || 'ami-nixos-latest',
+              image_id: ami_id,
               instance_type: instance_type,
-              key_name: tags[:KeyPair],
+              key_name: key_name,
               user_data: cloud_init,
+              iam_instance_profile: instance_profile_name ? { name: instance_profile_name } : nil,
+              vpc_security_group_ids: sg_id ? [sg_id] : [],
               metadata_options: {
                 http_endpoint: 'enabled',
                 http_tokens: 'required',
@@ -407,7 +500,8 @@ module Pangea
                   Role: 'worker',
                   NodePool: pool_config.name.to_s
                 )
-              }]
+              }],
+              tags: tags.merge(Name: "#{name}-#{pool_config.name}-lt")
             )
 
             ctx.aws_autoscaling_group(
@@ -417,7 +511,7 @@ module Pangea
               max_size: pool_config.max_size,
               desired_capacity: pool_config.effective_desired_size,
               launch_template: { id: lt.id, version: '$Latest' },
-              vpc_zone_identifier: tags[:SubnetIds] || [],
+              vpc_zone_identifier: subnet_ids,
               health_check_type: 'EC2',
               health_check_grace_period: 300,
               tags: [
@@ -429,6 +523,16 @@ module Pangea
           end
 
           private
+
+          def resolve_subnet_ids(config, result)
+            if config.network&.subnet_ids&.any?
+              config.network.subnet_ids
+            elsif result.network
+              result.network.select { |k, _| k.to_s.start_with?('subnet_') }.values.map(&:id)
+            else
+              []
+            end
+          end
 
           # Reject 0.0.0.0/0 for SSH and K8s API — these must never be public.
           def validate_cidr_restrictions!(config)

@@ -67,9 +67,9 @@ RSpec.describe 'AWS NixOS kubernetes distribution' do
       arch_result.network = Pangea::Kubernetes::Backends::AwsNixos.create_network(ctx, :test, config, base_tags)
       arch_result.iam = Pangea::Kubernetes::Backends::AwsNixos.create_iam(ctx, :test, config, base_tags)
 
-      Pangea::Kubernetes::Backends::AwsNixos.create_cluster(ctx, :test, config, arch_result, base_tags)
-      cp_0 = ctx.find_resource(:aws_instance, :test_cp_0)
-      expect(cp_0[:attrs][:subnet_id]).to eq('subnet-explicit-1')
+      ref = Pangea::Kubernetes::Backends::AwsNixos.create_cluster(ctx, :test, config, arch_result, base_tags)
+      asg = ctx.find_resource(:aws_autoscaling_group, :test_cp_asg)
+      expect(asg[:attrs][:vpc_zone_identifier]).to include('subnet-explicit-1')
     end
   end
 
@@ -92,8 +92,8 @@ RSpec.describe 'AWS NixOS kubernetes distribution' do
       arch_result.iam = Pangea::Kubernetes::Backends::AwsNixos.create_iam(ctx, :test, config, base_tags)
 
       Pangea::Kubernetes::Backends::AwsNixos.create_cluster(ctx, :test, config, arch_result, base_tags)
-      cp_0 = ctx.find_resource(:aws_instance, :test_cp_0)
-      expect(cp_0[:attrs][:ami]).to eq('ami-nixos-from-config')
+      lt = ctx.find_resource(:aws_launch_template, :test_cp_lt)
+      expect(lt[:attrs][:image_id]).to eq('ami-nixos-from-config')
     end
 
     it 'falls back to ami-nixos-latest when no ami_id or nixos config' do
@@ -113,8 +113,8 @@ RSpec.describe 'AWS NixOS kubernetes distribution' do
       arch_result.iam = Pangea::Kubernetes::Backends::AwsNixos.create_iam(ctx, :test, config, base_tags)
 
       Pangea::Kubernetes::Backends::AwsNixos.create_cluster(ctx, :test, config, arch_result, base_tags)
-      cp_0 = ctx.find_resource(:aws_instance, :test_cp_0)
-      expect(cp_0[:attrs][:ami]).to eq('ami-nixos-latest')
+      lt = ctx.find_resource(:aws_launch_template, :test_cp_lt)
+      expect(lt[:attrs][:image_id]).to eq('ami-nixos-latest')
     end
   end
 end
