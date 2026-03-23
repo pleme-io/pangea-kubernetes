@@ -69,7 +69,7 @@ BackendRegistry.resolve(config.backend)
   |     azure   -> AzureAks  (AKS)
   |
   +-- NixOS backends (k3s/k8s on NixOS VMs via blackmatter-kubernetes)
-        aws_nixos   -> AwsNixos   (EC2 + NixOS)
+        aws_nixos   -> AwsNixos   (LT+ASG+NLB, NixOS)
         gcp_nixos   -> GcpNixos   (GCE + NixOS)
         azure_nixos -> AzureNixos (Azure VM + NixOS)
         hcloud      -> HcloudK3s  (Hetzner + NixOS)
@@ -102,6 +102,28 @@ Every backend implements `Pangea::Kubernetes::Backends::Base`:
 
 NixOS backends share logic via `NixosBase` -- cloud-init generation, FluxCD
 bootstrap, sops-nix secrets, blackmatter-kubernetes profile selection.
+
+### AwsNixos compute pattern (ASG-based)
+
+All AWS NixOS compute uses ASGs — no raw `aws_instance` resources. The
+`create_cluster` method produces:
+
+```
+aws_launch_template   (AMI, instance type, cloud-init, IMDSv2, encrypted gp3, IAM profile, SG)
+aws_autoscaling_group (min/max/desired from system_node_pool, LT ref, subnets)
+aws_lb                (internal NLB — stable endpoint for workers)
+aws_lb_target_group   (TCP 6443, health check)
+aws_lb_listener       (TCP 6443 → target group)
+aws_autoscaling_attachment (ASG → target group)
+```
+
+Returns a `ControlPlaneRef` struct that:
+- `ipv4_address` → delegates to `nlb.dns_name` (used by `build_agent_cloud_init`)
+- Carries `subnet_ids`, `sg_id`, `instance_profile_name`, `ami_id`, `key_name`
+  so `create_worker_pool` reads infra context from the CP ref, not tags
+
+Workers use the same LT+ASG pattern. `create_worker_pool` reads IAM/SG/subnet
+from the `ControlPlaneRef` to ensure parity with the control plane.
 
 ## Key types
 
