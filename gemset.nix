@@ -133,12 +133,52 @@
     };
     version = "1.7.0";
   };
+  pangea-aws = {
+    dependencies = ["dry-struct" "dry-types" "pangea-core" "terraform-synthesizer"];
+    groups = ["default"];
+    platforms = [];
+    source = {
+      path = ../pangea-aws;
+      type = "path";
+    };
+    version = "0.2.0";
+  };
+  pangea-azure = {
+    dependencies = ["dry-struct" "dry-types" "pangea-core" "terraform-synthesizer"];
+    groups = ["default"];
+    platforms = [];
+    source = {
+      path = ../pangea-azure;
+      type = "path";
+    };
+    version = "0.1.0";
+  };
   pangea-core = {
     dependencies = ["base64" "dry-struct" "dry-types" "terraform-synthesizer"];
     groups = ["default"];
     platforms = [];
     source = {
       path = ../pangea-core;
+      type = "path";
+    };
+    version = "0.3.0";
+  };
+  pangea-gcp = {
+    dependencies = ["dry-struct" "dry-types" "pangea-core" "terraform-synthesizer"];
+    groups = ["default"];
+    platforms = [];
+    source = {
+      path = ../pangea-gcp;
+      type = "path";
+    };
+    version = "0.1.0";
+  };
+  pangea-hcloud = {
+    dependencies = ["dry-struct" "dry-types" "pangea-core" "terraform-synthesizer"];
+    groups = ["default"];
+    platforms = [];
+    source = {
+      path = ../pangea-hcloud;
       type = "path";
     };
     version = "0.1.0";
