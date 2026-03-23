@@ -19,7 +19,7 @@ PATH
 PATH
   remote: ../pangea-core
   specs:
-    pangea-core (0.2.0)
+    pangea-core (0.3.0)
       base64
       dry-struct (~> 1.6)
       dry-types (~> 1.7)
