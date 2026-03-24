@@ -88,7 +88,7 @@ module Pangea
               :"#{name}_etcd_encryption",
               bucket: network[:etcd_bucket].id,
               server_side_encryption_configuration: {
-                rule: [{ apply_server_side_encryption_by_default: { sse_algorithm: 'aws:kms' }, bucket_key_enabled: true }],
+                rule: [{ apply_server_side_encryption_by_default: { sse_algorithm: 'AES256' } }],
               }
             )
             ctx.aws_s3_bucket_public_access_block(
