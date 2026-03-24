@@ -384,8 +384,9 @@ module Pangea
               tags: tags.merge(Name: "#{name}-cp-lt")
             )
 
-            cp_desired = [system_pool.min_size, 1].max
-            max_cp = system_pool.max_size || system_pool.min_size || 1
+            # min_size=0 allows parked mode (all instances off, infra preserved)
+            cp_desired = system_pool.min_size || 1
+            max_cp = system_pool.max_size || [cp_desired, 1].max
             asg = ctx.aws_autoscaling_group(
               :"#{name}_cp_asg",
               name: "#{name}-cp-asg",

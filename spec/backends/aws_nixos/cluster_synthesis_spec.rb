@@ -244,6 +244,41 @@ RSpec.describe Pangea::Kubernetes::Backends::AwsNixos do
       expect(user_data).to include('"profile":"calico-standard"')
       expect(user_data).to include('"role":"control-plane"')
     end
+
+    context 'parked mode (min_size=0)' do
+      let(:parked_config) do
+        Pangea::Kubernetes::Types::ClusterConfig.new(
+          backend: :aws_nixos, kubernetes_version: '1.34', region: 'us-east-1',
+          distribution: :k3s, profile: 'cilium-standard', distribution_track: '1.34',
+          ami_id: 'ami-nixos-test', key_pair: 'my-key',
+          node_pools: [
+            { name: :system, instance_types: ['t3.small'], min_size: 0, max_size: 1 },
+          ],
+          network: { vpc_cidr: '10.0.0.0/16' },
+          tags: { account_id: '123456789012', etcd_backup_bucket: 'test-etcd' }
+        )
+      end
+      let(:parked_arch) do
+        r = Pangea::Kubernetes::Architecture::ArchitectureResult.new(:parked, parked_config)
+        r.network = described_class.create_network(ctx, :parked, parked_config, base_tags)
+        r.iam = described_class.create_iam(ctx, :parked, parked_config, base_tags)
+        r
+      end
+
+      it 'sets CP ASG desired_capacity to 0' do
+        described_class.create_cluster(ctx, :parked, parked_config, parked_arch, base_tags)
+        asg = ctx.find_resource(:aws_autoscaling_group, :parked_cp_asg)
+        expect(asg[:attrs][:desired_capacity]).to eq(0)
+        expect(asg[:attrs][:min_size]).to eq(0)
+      end
+
+      it 'still creates LT, NLB, and all infra' do
+        described_class.create_cluster(ctx, :parked, parked_config, parked_arch, base_tags)
+        expect(ctx.find_resource(:aws_launch_template, :parked_cp_lt)).not_to be_nil
+        expect(ctx.find_resource(:aws_lb, :parked_cp_nlb)).not_to be_nil
+        expect(ctx.find_resource(:aws_lb_target_group, :parked_cp_tg)).not_to be_nil
+      end
+    end
   end
 
   describe '.create_node_pool' do
