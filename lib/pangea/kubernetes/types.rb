@@ -25,6 +25,7 @@ require 'pangea/kubernetes/types/control_plane_config'
 require 'pangea/kubernetes/types/secrets_config'
 require 'pangea/kubernetes/types/k3s_config'
 require 'pangea/kubernetes/types/kubernetes_config'
+require 'pangea/kubernetes/types/argocd_config'
 
 module Pangea
   module Kubernetes
@@ -255,8 +256,20 @@ module Pangea
         # Distribution version track (e.g., '1.34', '1.35')
         attribute :distribution_track, T::String.optional.default(nil)
 
+        # GitOps operator selection (:fluxcd or :argocd, default: :fluxcd)
+        attribute :gitops_operator, T::Coercible::Symbol.constrained(
+          included_in: %i[fluxcd argocd none]
+        ).default(:fluxcd)
+
         # FluxCD GitOps bootstrap (NixOS backends only)
         attribute :fluxcd, FluxCDConfig.optional.default(nil)
+
+        # ArgoCD GitOps bootstrap (NixOS backends only)
+        attribute :argocd, ArgocdConfig.optional.default(nil)
+
+        # Enable Karpenter IRSA IAM role at Terraform time (AWS only).
+        # Karpenter itself is deployed post-cluster via GitOps.
+        attribute :karpenter_enabled, T::Bool.default(false)
 
         # NixOS configuration (NixOS backends only)
         attribute :nixos, NixOSConfig.optional.default(nil)

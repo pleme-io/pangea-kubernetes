@@ -89,6 +89,11 @@ module Pangea
 
         # Build cloud-init for a control plane server with full option passthrough.
         def build_server_cloud_init(name, config, index, result)
+          gitops_config = case config.gitops_operator
+                          when :fluxcd then config.fluxcd&.to_h
+                          when :argocd then config.argocd&.to_h
+                          end
+
           BareMetal::CloudInit.generate(
             cluster_name: name.to_s,
             distribution: config.distribution,
@@ -98,7 +103,8 @@ module Pangea
             node_index: index,
             cluster_init: index.zero?,
             network_id: result.network&.dig(:network)&.id,
-            fluxcd: config.fluxcd&.to_h,
+            fluxcd: config.gitops_operator == :fluxcd ? gitops_config : nil,
+            argocd: config.gitops_operator == :argocd ? gitops_config : nil,
             k3s: config.distribution == :k3s ? config.nixos&.k3s&.to_h : nil,
             kubernetes: config.distribution == :kubernetes ? config.nixos&.kubernetes&.to_h : nil,
             secrets: build_secrets_hash(config)

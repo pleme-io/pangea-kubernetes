@@ -279,6 +279,63 @@ RSpec.describe Pangea::Kubernetes::Backends::AwsNixos do
         expect(ctx.find_resource(:aws_lb_target_group, :parked_cp_tg)).not_to be_nil
       end
     end
+
+    context 'with karpenter_enabled' do
+      let(:karpenter_config) do
+        Pangea::Kubernetes::Types::ClusterConfig.new(
+          backend: :aws_nixos, kubernetes_version: '1.34', region: 'us-east-1',
+          distribution: :k3s, profile: 'cilium-standard', distribution_track: '1.34',
+          ami_id: 'ami-nixos-test', key_pair: 'my-key', karpenter_enabled: true,
+          node_pools: [{ name: :system, instance_types: ['t3.small'], min_size: 1, max_size: 1 }],
+          network: { vpc_cidr: '10.0.0.0/16' },
+          tags: { account_id: '123456789012', etcd_backup_bucket: 'test-etcd' }
+        )
+      end
+
+      it 'creates Karpenter IAM role and instance profile' do
+        iam = described_class.create_iam(ctx, :karp, karpenter_config, base_tags)
+        expect(iam[:karpenter_role]).not_to be_nil
+        expect(iam[:karpenter_profile]).not_to be_nil
+      end
+    end
+
+    context 'without karpenter_enabled' do
+      it 'does not create Karpenter IAM resources' do
+        iam = described_class.create_iam(ctx, :production, cluster_config, base_tags)
+        expect(iam).not_to have_key(:karpenter_role)
+        expect(iam).not_to have_key(:karpenter_profile)
+      end
+    end
+
+    context 'with argocd gitops operator' do
+      let(:argocd_config) do
+        Pangea::Kubernetes::Types::ClusterConfig.new(
+          backend: :aws_nixos, kubernetes_version: '1.34', region: 'us-east-1',
+          distribution: :k3s, profile: 'cilium-standard', distribution_track: '1.34',
+          ami_id: 'ami-nixos-test', key_pair: 'my-key',
+          gitops_operator: :argocd,
+          argocd: { repo_url: 'ssh://git@github.com/pleme-io/akeyless-k8s', path: './clusters/kazoku' },
+          node_pools: [{ name: :system, instance_types: ['t3.small'], min_size: 1, max_size: 1 }],
+          network: { vpc_cidr: '10.0.0.0/16' },
+          tags: { account_id: '123456789012', etcd_backup_bucket: 'test-etcd' }
+        )
+      end
+      let(:argocd_arch) do
+        r = Pangea::Kubernetes::Architecture::ArchitectureResult.new(:argo, argocd_config)
+        r.network = described_class.create_network(ctx, :argo, argocd_config, base_tags)
+        r.iam = described_class.create_iam(ctx, :argo, argocd_config, base_tags)
+        r
+      end
+
+      it 'includes argocd config in cloud-init (not fluxcd)' do
+        described_class.create_cluster(ctx, :argo, argocd_config, argocd_arch, base_tags)
+        lt = ctx.find_resource(:aws_launch_template, :argo_cp_lt)
+        user_data = lt[:attrs][:user_data]
+        expect(user_data).to include('"argocd"')
+        expect(user_data).to include('pleme-io/akeyless-k8s')
+        expect(user_data).not_to include('"fluxcd"')
+      end
+    end
   end
 
   describe '.create_node_pool' do

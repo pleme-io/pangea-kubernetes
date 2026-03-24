@@ -335,6 +335,34 @@ module Pangea
               tags: tags.merge(Name: "#{name}-logs")
             )
 
+            # ── Karpenter IRSA role (opt-in, deployed post-cluster via GitOps)
+            if config.karpenter_enabled
+              karpenter_assume = {
+                Version: '2012-10-17',
+                Statement: [{
+                  Effect: 'Allow',
+                  Principal: { Service: 'ec2.amazonaws.com' },
+                  Action: 'sts:AssumeRole'
+                }]
+              }.to_json
+
+              iam[:karpenter_role] = ctx.aws_iam_role(
+                :"#{name}_karpenter_role",
+                name: "#{name}-karpenter-role",
+                description: "Karpenter node role for #{name} (IRSA)",
+                assume_role_policy: karpenter_assume,
+                max_session_duration: 3600,
+                tags: tags.merge(Name: "#{name}-karpenter-role")
+              )
+
+              iam[:karpenter_profile] = ctx.aws_iam_instance_profile(
+                :"#{name}_karpenter_profile",
+                name: "#{name}-karpenter-profile",
+                role: iam[:karpenter_role].ref(:name),
+                tags: tags.merge(Name: "#{name}-karpenter-profile")
+              )
+            end
+
             iam
           end
 

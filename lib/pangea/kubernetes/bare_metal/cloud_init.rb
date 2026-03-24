@@ -41,6 +41,7 @@ module Pangea
           # @param network_id [String, nil] Cloud network ID for private networking
           # @param join_server [String, nil] IP/hostname of the server to join
           # @param fluxcd [Hash, nil] FluxCD bootstrap configuration
+          # @param argocd [Hash, nil] ArgoCD bootstrap configuration
           # @param k3s [Hash, nil] K3s distribution options (full passthrough)
           # @param kubernetes [Hash, nil] Vanilla Kubernetes options (full passthrough)
           # @param secrets [Hash, nil] Secrets path references (sops-nix)
@@ -48,7 +49,7 @@ module Pangea
           def generate(cluster_name:, distribution: :k3s, profile: 'cilium-standard',
                        distribution_track: '1.34', role: 'server', node_index: 0,
                        cluster_init: false, network_id: nil, join_server: nil,
-                       fluxcd: nil, k3s: nil, kubernetes: nil, secrets: nil)
+                       fluxcd: nil, argocd: nil, k3s: nil, kubernetes: nil, secrets: nil)
             config = {
               'cluster_name' => cluster_name,
               'distribution' => distribution.to_s,
@@ -62,6 +63,7 @@ module Pangea
             config['network_id'] = network_id if network_id
             config['join_server'] = join_server if join_server
             config['fluxcd'] = fluxcd if fluxcd
+            config['argocd'] = stringify_keys_recursive(argocd) if argocd && !argocd.empty?
             config['k3s'] = stringify_keys_recursive(k3s) if k3s && !k3s.empty?
             config['kubernetes'] = stringify_keys_recursive(kubernetes) if kubernetes && !kubernetes.empty?
             config['secrets'] = stringify_keys_recursive(secrets) if secrets && !secrets.empty?
