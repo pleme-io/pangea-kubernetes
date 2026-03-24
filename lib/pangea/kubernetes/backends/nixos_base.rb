@@ -45,7 +45,8 @@ module Pangea
           api: { port: 6443, protocol: :tcp, public: true, description: 'K8s API' },
           kubelet: { port: 10_250, protocol: :tcp, public: false, description: 'Kubelet' },
           etcd: { port: '2379-2380', protocol: :tcp, public: false, description: 'etcd' },
-          vxlan: { port: 8472, protocol: :udp, public: false, description: 'VXLAN' }
+          vxlan: { port: 8472, protocol: :udp, public: false, description: 'VXLAN' },
+          wireguard: { port: 51_820, protocol: :udp, public: false, description: 'WireGuard VPN' }
         }.freeze
 
         # Additional ports for vanilla Kubernetes
@@ -107,7 +108,8 @@ module Pangea
             argocd: config.gitops_operator == :argocd ? gitops_config : nil,
             k3s: config.distribution == :k3s ? config.nixos&.k3s&.to_h : nil,
             kubernetes: config.distribution == :kubernetes ? config.nixos&.kubernetes&.to_h : nil,
-            secrets: build_secrets_hash(config)
+            secrets: build_secrets_hash(config),
+            vpn: config.vpn&.to_h
           )
         end
 

@@ -26,6 +26,7 @@ require 'pangea/kubernetes/types/secrets_config'
 require 'pangea/kubernetes/types/k3s_config'
 require 'pangea/kubernetes/types/kubernetes_config'
 require 'pangea/kubernetes/types/argocd_config'
+require 'pangea/kubernetes/types/vpn_config'
 
 module Pangea
   module Kubernetes
@@ -274,6 +275,9 @@ module Pangea
         # NixOS configuration (NixOS backends only)
         attribute :nixos, NixOSConfig.optional.default(nil)
 
+        # VPN configuration (WireGuard links for operator access)
+        attribute :vpn, VpnConfig.optional.default(nil)
+
         # AWS-specific (managed EKS or NixOS EC2)
         attribute :role_arn, T::String.optional.default(nil)
         attribute :ami_id, T::String.optional.default(nil)
@@ -304,6 +308,12 @@ module Pangea
           node_pools.reject { |np| np.name == :system }
         end
 
+        def self.new(attributes)
+          instance = super
+          instance.vpn&.validate! if instance.vpn
+          instance
+        end
+
         def to_h
           hash = {
             backend: backend,
@@ -321,6 +331,7 @@ module Pangea
           hash[:distribution_track] = distribution_track if distribution_track
           hash[:fluxcd] = fluxcd.to_h if fluxcd
           hash[:nixos] = nixos.to_h if nixos
+          hash[:vpn] = vpn.to_h if vpn && vpn.links.any?
           hash[:role_arn] = role_arn if role_arn
           hash[:ami_id] = ami_id if ami_id
           hash[:key_pair] = key_pair if key_pair

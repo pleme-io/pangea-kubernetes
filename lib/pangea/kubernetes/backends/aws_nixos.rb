@@ -563,15 +563,22 @@ module Pangea
             end
           end
 
-          # Reject 0.0.0.0/0 for SSH and K8s API — these must never be public.
+          # Reject 0.0.0.0/0 for SSH, K8s API, and VPN — these must never be public.
           def validate_cidr_restrictions!(config)
             ssh_cidr = config.tags[:ssh_cidr] || config.tags['ssh_cidr']
             api_cidr = config.tags[:api_cidr] || config.tags['api_cidr']
+            vpn_cidr = config.tags[:vpn_cidr] || config.tags['vpn_cidr']
             if ssh_cidr == '0.0.0.0/0'
               raise ArgumentError, "ssh_cidr must not be 0.0.0.0/0 — SSH must not be public"
             end
             if api_cidr == '0.0.0.0/0'
               raise ArgumentError, "api_cidr must not be 0.0.0.0/0 — K8s API must not be public"
+            end
+            if vpn_cidr == '0.0.0.0/0'
+              raise ArgumentError, "vpn_cidr must not be 0.0.0.0/0 — WireGuard must not be public"
+            end
+            if vpn_cidr.nil? && config.vpn && config.vpn.links.any?
+              raise ArgumentError, "vpn_cidr tag is required when VPN links are configured"
             end
           end
 
@@ -580,12 +587,14 @@ module Pangea
           def aws_security_group_rules(config, vpc_cidr)
             ssh_cidr = config.tags[:ssh_cidr] || config.tags['ssh_cidr'] || vpc_cidr
             api_cidr = config.tags[:api_cidr] || config.tags['api_cidr'] || vpc_cidr
+            vpn_cidr = config.tags[:vpn_cidr] || config.tags['vpn_cidr']
 
-            base_firewall_ports(config.distribution).map do |port_name, port_def|
+            rules = base_firewall_ports(config.distribution).map do |port_name, port_def|
               cidr = case port_name
                      when :ssh then [ssh_cidr]
                      when :api then [api_cidr]
                      when :http, :https then ['0.0.0.0/0']
+                     when :wireguard then vpn_cidr ? [vpn_cidr] : [vpc_cidr]
                      else [vpc_cidr]
                      end
 
@@ -597,6 +606,11 @@ module Pangea
                 description: port_def[:description]
               }
             end
+
+            # Remove WireGuard rule entirely when no VPN is configured
+            rules.reject! { |r| r[:description] == 'WireGuard VPN' } unless vpn_cidr || config.vpn
+
+            rules
           end
 
           def port_range_start(port)
