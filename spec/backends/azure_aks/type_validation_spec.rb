@@ -16,6 +16,10 @@ RSpec.describe 'azure_aks backend type validation' do
 
   let(:typed_ctx) { create_typed_azure_context }
 
+  it_behaves_like 'typed backend contract',
+    Pangea::Kubernetes::Backends::AzureAks,
+    :create_typed_azure_context
+
   let(:base_tags) { { 'KubernetesCluster' => 'typecheck', 'Backend' => 'azure', 'ManagedBy' => 'Pangea' } }
 
   let(:cluster_config) do

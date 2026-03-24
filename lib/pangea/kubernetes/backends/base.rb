@@ -18,18 +18,22 @@ module Pangea
   module Kubernetes
     module Backends
       # Contract interface for Kubernetes backends. Each backend module
-      # must implement these class methods and instance methods.
+      # must implement these class methods (via class << self):
       #
-      # Class methods (via extend ClassMethods):
-      #   backend_name    → Symbol (:aws, :gcp, :azure, :hcloud)
-      #   managed_kubernetes? → true for EKS/GKE/AKS, false for k3s
-      #   required_gem    → String gem name to require
+      # Identity methods:
+      #   backend_name        → Symbol (:aws, :gcp, :azure, :hcloud, etc.)
+      #   managed_kubernetes? → true for EKS/GKE/AKS, false for NixOS/k3s
+      #   required_gem        → String gem name to require
+      #   load_provider!      → Require the provider gem (or raise LoadError)
       #
-      # Instance methods (mixed into synthesizer context):
-      #   create_cluster(name, config, tags)  → Hash of resources
-      #   create_node_pool(name, cluster_ref, pool_config, tags) → ResourceReference
-      #   create_network(name, config, tags)  → Hash of resources
-      #   create_iam(name, config, tags)      → Hash of resources
+      # Infrastructure pipeline methods (all class-level):
+      #   create_network(ctx, name, config, tags) → Pangea::Contracts::NetworkResult
+      #   create_iam(ctx, name, config, tags)     → Pangea::Contracts::IamResult
+      #   create_cluster(ctx, name, config, result, tags) → control plane ref
+      #   create_node_pool(ctx, name, cluster_ref, pool_config, tags) → ResourceReference
+      #
+      # Backends implement all pipeline methods in `class << self` so they
+      # are called as e.g. AwsNixos.create_network(ctx, ...).
       module Base
         def self.included(base)
           base.extend(ClassMethods)
@@ -56,27 +60,55 @@ module Pangea
                   "Add it to your Gemfile: gem '#{required_gem}'\n" \
                   "Original error: #{e.message}"
           end
-        end
 
-        # Create cluster resources. Returns a Hash:
-        #   { cluster: ResourceReference, ...additional_resources }
-        def create_cluster(_name, _config, _tags)
-          raise NotImplementedError, "#{self.class} must implement #create_cluster"
-        end
+          # Create networking resources (VPC, subnets, security groups, etc.).
+          # Must return a Pangea::Contracts::NetworkResult (or subclass).
+          #
+          # @param ctx [Object] Synthesizer context (provides resource methods)
+          # @param name [Symbol] Cluster name
+          # @param config [Types::ClusterConfig] Cluster configuration
+          # @param tags [Hash] Resource tags
+          # @return [Pangea::Contracts::NetworkResult]
+          def create_network(_ctx, _name, _config, _tags)
+            raise NotImplementedError, "#{self} must implement .create_network"
+          end
 
-        # Create a single node pool. Returns ResourceReference.
-        def create_node_pool(_name, _cluster_ref, _pool_config, _tags)
-          raise NotImplementedError, "#{self.class} must implement #create_node_pool"
-        end
+          # Create IAM resources (roles, policies, service accounts).
+          # Must return a Pangea::Contracts::IamResult (or subclass).
+          #
+          # @param ctx [Object] Synthesizer context
+          # @param name [Symbol] Cluster name
+          # @param config [Types::ClusterConfig] Cluster configuration
+          # @param tags [Hash] Resource tags
+          # @return [Pangea::Contracts::IamResult]
+          def create_iam(_ctx, _name, _config, _tags)
+            raise NotImplementedError, "#{self} must implement .create_iam"
+          end
 
-        # Create networking resources (VPC, subnets, etc.). Returns Hash of refs.
-        def create_network(_name, _config, _tags)
-          raise NotImplementedError, "#{self.class} must implement #create_network"
-        end
+          # Create the cluster control plane (EKS cluster, ASG+NLB, GKE cluster, etc.).
+          # Return type is backend-specific (ControlPlaneRef, resource ref, etc.).
+          #
+          # @param ctx [Object] Synthesizer context
+          # @param name [Symbol] Cluster name
+          # @param config [Types::ClusterConfig] Cluster configuration
+          # @param result [Pangea::Contracts::ArchitectureResult] Accumulated result with network/iam
+          # @param tags [Hash] Resource tags
+          # @return [Object] Control plane reference (wrapped in ClusterResult by Architecture)
+          def create_cluster(_ctx, _name, _config, _result, _tags)
+            raise NotImplementedError, "#{self} must implement .create_cluster"
+          end
 
-        # Create IAM resources (roles, policies). Returns Hash of refs.
-        def create_iam(_name, _config, _tags)
-          raise NotImplementedError, "#{self.class} must implement #create_iam"
+          # Create a worker node pool for the cluster.
+          #
+          # @param ctx [Object] Synthesizer context
+          # @param name [Symbol] Cluster name
+          # @param cluster_ref [Object] Reference to the control plane
+          # @param pool_config [Types::NodePoolConfig] Node pool configuration
+          # @param tags [Hash] Resource tags
+          # @return [Object] Node pool resource reference
+          def create_node_pool(_ctx, _name, _cluster_ref, _pool_config, _tags)
+            raise NotImplementedError, "#{self} must implement .create_node_pool"
+          end
         end
       end
     end

@@ -16,6 +16,10 @@ RSpec.describe 'gcp_gke backend type validation' do
 
   let(:typed_ctx) { create_typed_gcp_context }
 
+  it_behaves_like 'typed backend contract',
+    Pangea::Kubernetes::Backends::GcpGke,
+    :create_typed_gcp_context
+
   let(:base_tags) { { KubernetesCluster: 'typecheck', Backend: 'gcp', ManagedBy: 'Pangea' } }
 
   let(:cluster_config) do

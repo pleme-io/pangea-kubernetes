@@ -32,3 +32,14 @@ require 'pangea/testing'
 Dir[File.join(__dir__, 'support', '**', '*.rb')].each { |f| require f }
 
 Pangea::Testing::SpecSetup.configure!
+
+RSpec.configure do |config|
+  # Auto-include TypedContextHelpers in backend specs so each
+  # type_validation_spec doesn't need explicit include lines.
+  config.include TypedContextHelpers
+
+  # Tag specs under spec/backends/ with type: :backend
+  config.define_derived_metadata(file_path: %r{spec/backends/}) do |metadata|
+    metadata[:type] = :backend
+  end
+end

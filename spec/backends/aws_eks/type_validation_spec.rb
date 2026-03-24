@@ -16,6 +16,10 @@ RSpec.describe 'aws_eks backend type validation' do
 
   let(:typed_ctx) { create_typed_aws_context }
 
+  it_behaves_like 'typed backend contract',
+    Pangea::Kubernetes::Backends::AwsEks,
+    :create_typed_aws_context
+
   let(:base_tags) { { KubernetesCluster: 'typecheck', Backend: 'aws', ManagedBy: 'Pangea' } }
 
   let(:cluster_config) do

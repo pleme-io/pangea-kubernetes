@@ -17,6 +17,10 @@ RSpec.describe 'hcloud_k3s backend type validation' do
 
   let(:typed_ctx) { create_typed_hcloud_context }
 
+  it_behaves_like 'typed backend contract',
+    Pangea::Kubernetes::Backends::HcloudK3s,
+    :create_typed_hcloud_context
+
   let(:base_tags) { { KubernetesCluster: 'typecheck', Backend: 'hcloud', ManagedBy: 'Pangea' } }
 
   let(:cluster_config) do

@@ -17,6 +17,10 @@ RSpec.describe 'gcp_nixos backend type validation' do
 
   let(:typed_ctx) { create_typed_gcp_context }
 
+  it_behaves_like 'typed backend contract',
+    Pangea::Kubernetes::Backends::GcpNixos,
+    :create_typed_gcp_context
+
   let(:base_tags) { { KubernetesCluster: 'typecheck', Backend: 'gcp_nixos', ManagedBy: 'Pangea' } }
 
   let(:cluster_config) do

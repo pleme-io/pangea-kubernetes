@@ -20,6 +20,10 @@ RSpec.describe 'aws_nixos backend type validation' do
 
   let(:typed_ctx) { create_typed_aws_context }
 
+  it_behaves_like 'typed backend contract',
+    Pangea::Kubernetes::Backends::AwsNixos,
+    :create_typed_aws_context
+
   let(:base_tags) { { KubernetesCluster: 'typecheck', Backend: 'aws_nixos', ManagedBy: 'Pangea' } }
 
   let(:cluster_config) do

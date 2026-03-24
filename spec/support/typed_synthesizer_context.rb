@@ -19,8 +19,9 @@
 class TypedSynthesizerContext
   attr_reader :created_resources
 
-  def initialize
+  def initialize(strict: false)
     @created_resources = []
+    @strict = strict
   end
 
   # Stub for terraform-synthesizer's resource() method.
@@ -48,7 +49,17 @@ class TypedSynthesizerContext
   # For methods that the provider module doesn't define (e.g., resources
   # that don't have a dedicated resource.rb yet), fall back to mock behavior
   # similar to MockSynthesizerContext.
+  #
+  # In strict mode, resource-like calls (aws_*, google_*, azurerm_*, hcloud_*)
+  # that hit method_missing are rejected — they should go through typed
+  # provider modules instead.
   def method_missing(method_name, *args, &block)
+    if @strict && resource_like_method?(method_name)
+      raise NoMethodError,
+        "Strict mode: '#{method_name}' has no typed resource definition. " \
+        "Resource calls must go through typed provider modules for validation."
+    end
+
     # If it looks like a resource call (has a symbol name as first arg),
     # record it as a mock resource
     if args.first.is_a?(Symbol) || args.first.is_a?(String)
@@ -65,6 +76,16 @@ class TypedSynthesizerContext
 
   def respond_to_missing?(_method_name, _include_private = false)
     true
+  end
+
+  private
+
+  # Detect method names that look like Terraform resource calls.
+  # These should go through typed provider modules when strict mode is on.
+  def resource_like_method?(name)
+    name_s = name.to_s
+    name_s.start_with?('aws_', 'google_', 'azurerm_', 'hcloud_') ||
+      name_s == 'resource' || name_s == 'provider'
   end
 end
 
@@ -85,40 +106,41 @@ class NullBlockReceiver
   end
 end
 
-# Helper module for creating typed contexts in specs
+# Helper module for creating typed contexts in specs.
+# All factory methods accept strict: true to reject untyped resource calls.
 module TypedContextHelpers
   # Create a typed context that validates AWS resource calls through
   # real pangea-aws type definitions.
-  def create_typed_aws_context
+  def create_typed_aws_context(strict: false)
     require 'pangea-aws'
-    ctx = TypedSynthesizerContext.new
+    ctx = TypedSynthesizerContext.new(strict: strict)
     ctx.extend(Pangea::Resources::AWS)
     ctx
   end
 
   # Create a typed context for GCP resources
-  def create_typed_gcp_context
+  def create_typed_gcp_context(strict: false)
     require 'pangea-gcp'
     require 'pangea/resources/google'
-    ctx = TypedSynthesizerContext.new
+    ctx = TypedSynthesizerContext.new(strict: strict)
     ctx.extend(Pangea::Resources::Google)
     ctx
   end
 
   # Create a typed context for Azure resources
-  def create_typed_azure_context
+  def create_typed_azure_context(strict: false)
     require 'pangea-azure'
     require 'pangea/resources/azure'
-    ctx = TypedSynthesizerContext.new
+    ctx = TypedSynthesizerContext.new(strict: strict)
     ctx.extend(Pangea::Resources::Azure)
     ctx
   end
 
   # Create a typed context for Hetzner Cloud resources
-  def create_typed_hcloud_context
+  def create_typed_hcloud_context(strict: false)
     require 'pangea-hcloud'
     require 'pangea/resources/hcloud'
-    ctx = TypedSynthesizerContext.new
+    ctx = TypedSynthesizerContext.new(strict: strict)
     ctx.extend(Pangea::Resources::Hcloud)
     ctx
   end

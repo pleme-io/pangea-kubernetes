@@ -8,13 +8,6 @@ RSpec.describe Pangea::Kubernetes::Backends::Base do
     mod
   end
 
-  # Create a class that includes the test module for instance method testing
-  let(:unimplemented_instance) do
-    klass = Class.new
-    klass.include(Pangea::Kubernetes::Backends::Base)
-    klass.new
-  end
-
   describe 'ClassMethods' do
     describe '.backend_name' do
       it 'raises NotImplementedError when not overridden' do
@@ -51,28 +44,28 @@ RSpec.describe Pangea::Kubernetes::Backends::Base do
     end
   end
 
-  describe 'instance methods' do
-    describe '#create_cluster' do
+  describe 'class-level pipeline methods' do
+    describe '.create_network' do
       it 'raises NotImplementedError' do
-        expect { unimplemented_instance.create_cluster(nil, nil, nil) }.to raise_error(NotImplementedError, /must implement #create_cluster/)
+        expect { unimplemented_backend.create_network(nil, nil, nil, nil) }.to raise_error(NotImplementedError, /must implement .create_network/)
       end
     end
 
-    describe '#create_node_pool' do
+    describe '.create_iam' do
       it 'raises NotImplementedError' do
-        expect { unimplemented_instance.create_node_pool(nil, nil, nil, nil) }.to raise_error(NotImplementedError, /must implement #create_node_pool/)
+        expect { unimplemented_backend.create_iam(nil, nil, nil, nil) }.to raise_error(NotImplementedError, /must implement .create_iam/)
       end
     end
 
-    describe '#create_network' do
+    describe '.create_cluster' do
       it 'raises NotImplementedError' do
-        expect { unimplemented_instance.create_network(nil, nil, nil) }.to raise_error(NotImplementedError, /must implement #create_network/)
+        expect { unimplemented_backend.create_cluster(nil, nil, nil, nil, nil) }.to raise_error(NotImplementedError, /must implement .create_cluster/)
       end
     end
 
-    describe '#create_iam' do
+    describe '.create_node_pool' do
       it 'raises NotImplementedError' do
-        expect { unimplemented_instance.create_iam(nil, nil, nil) }.to raise_error(NotImplementedError, /must implement #create_iam/)
+        expect { unimplemented_backend.create_node_pool(nil, nil, nil, nil, nil) }.to raise_error(NotImplementedError, /must implement .create_node_pool/)
       end
     end
   end
