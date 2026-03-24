@@ -172,7 +172,7 @@ RSpec.describe Pangea::Kubernetes::Architecture do
     end
 
     context 'VPN config validation' do
-      it 'rejects a flat vpn hash missing :links key' do
+      it 'accepts a cloud-init passthrough VPN hash (no :links key)' do
         attrs = base_cluster_attrs.merge(
           vpn: {
             interface: 'wg0',
@@ -182,8 +182,8 @@ RSpec.describe Pangea::Kubernetes::Architecture do
             private_key: 'xyz',
           }
         )
-        expect { synth.kubernetes_cluster(:test, attrs) }
-          .to raise_error(ArgumentError, /missing :links/)
+        result = synth.kubernetes_cluster(:test, attrs)
+        expect(result).to be_a(Pangea::Kubernetes::Architecture::ArchitectureResult)
       end
 
       it 'accepts a valid VpnConfig hash with links' do
