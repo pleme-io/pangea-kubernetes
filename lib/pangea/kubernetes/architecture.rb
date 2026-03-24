@@ -51,24 +51,11 @@ module Pangea
       # @param attributes [Hash] Cluster configuration (see Types::ClusterConfig)
       # @return [ArchitectureResult] with cluster, node_pools, network, iam references
       def kubernetes_cluster(name, attributes = {})
-        # Validate VPN config structure before ClusterConfig coercion.
-        # dry-struct silently drops unknown keys, so a flat hash like
-        # {interface: 'wg0', port: 51822} would produce an empty VpnConfig
-        # with no links — losing the VPN configuration without any error.
-        if attributes[:vpn].is_a?(Hash) && !attributes[:vpn].is_a?(Types::VpnConfig)
-          vpn_hash = attributes[:vpn]
-          unless vpn_hash.key?(:links) || vpn_hash.key?('links')
-            known_keys = %i[links require_liveness]
-            unknown_keys = vpn_hash.keys.map(&:to_sym) - known_keys
-            if unknown_keys.any?
-              raise ArgumentError,
-                    "VPN config has unrecognized keys #{unknown_keys.inspect} and is missing :links. " \
-                    "Expected VpnConfig structure: { links: [{ name:, address:, listen_port:, peers: [...] }] }. " \
-                    "Raw cloud-init passthrough hashes are not validated by the type system — " \
-                    "convert to VpnConfig format or pass a Types::VpnConfig instance."
-            end
-          end
-        end
+        # VPN config comes in two forms:
+        # 1. Typed (VpnConfig with :links) — validated by dry-struct, used by NixOS backends
+        # 2. Cloud-init passthrough (flat hash with :interface, :port, etc.) — passed
+        #    as-is to cloud-init for AWS/cloud backends where the node configures WireGuard
+        # Both are legitimate. Only validate if the hash has :links (typed form).
 
         config = Types::ClusterConfig.new(attributes)
         backend_module = BackendRegistry.resolve(config.backend)
