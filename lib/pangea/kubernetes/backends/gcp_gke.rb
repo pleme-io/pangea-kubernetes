@@ -39,37 +39,38 @@ module Pangea
 
           # Create GCP VPC network + subnet
           def create_network(ctx, name, config, tags)
-            network = {}
+            network = Architecture::NetworkResult.new
 
-            network[:vpc] = ctx.google_compute_network(
+            network.vpc = ctx.google_compute_network(
               :"#{name}_network",
               name: "#{name}-network",
               auto_create_subnetworks: false,
               project: config.project
             )
 
-            network[:subnet] = ctx.google_compute_subnetwork(
+            subnet = ctx.google_compute_subnetwork(
               :"#{name}_subnet",
               name: "#{name}-subnet",
               ip_cidr_range: config.network&.vpc_cidr || '10.0.0.0/20',
               region: config.region,
-              network: network[:vpc].id,
+              network: network.vpc.id,
               project: config.project,
               secondary_ip_range: [
                 { range_name: "#{name}-pods", ip_cidr_range: config.network&.pod_cidr || '10.1.0.0/16' },
                 { range_name: "#{name}-services", ip_cidr_range: config.network&.service_cidr || '10.2.0.0/20' }
               ]
             )
+            network.add_subnet(:subnet, subnet)
 
             network
           end
 
           # GKE uses Workload Identity — no standalone IAM resources needed
           def create_iam(ctx, name, config, tags)
-            iam = {}
+            iam = Architecture::GcpIamResult.new
 
             # Service account for GKE nodes
-            iam[:node_sa] = ctx.google_service_account(
+            iam.node_sa = ctx.google_service_account(
               :"#{name}_node_sa",
               account_id: "#{name}-gke-nodes",
               display_name: "#{name} GKE Node Service Account",
@@ -82,7 +83,7 @@ module Pangea
                 :"#{name}_node_#{role.gsub('.', '_')}",
                 project: config.project,
                 role: "roles/#{role}",
-                member: "serviceAccount:#{iam[:node_sa].email}"
+                member: "serviceAccount:#{iam.node_sa.email}"
               )
             end
 

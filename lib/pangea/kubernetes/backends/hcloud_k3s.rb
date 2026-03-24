@@ -43,30 +43,32 @@ module Pangea
 
           # Create Hetzner Cloud network + subnet
           def create_network(ctx, name, config, tags)
-            network = {}
+            network = Architecture::HcloudNetworkResult.new
 
             ip_range = config.network&.vpc_cidr || '10.0.0.0/16'
-            network[:network] = ctx.hcloud_network(
+            network.network = ctx.hcloud_network(
               :"#{name}_network",
               name: "#{name}-network",
               ip_range: ip_range,
               labels: hcloud_labels(tags)
             )
+            network.vpc = network.network
 
-            network[:subnet] = ctx.hcloud_network_subnet(
+            subnet = ctx.hcloud_network_subnet(
               :"#{name}_subnet",
-              network_id: network[:network].id,
+              network_id: network.network.id,
               type: 'cloud',
               network_zone: config.region,
               ip_range: config.network&.pod_cidr || '10.0.1.0/24'
             )
+            network.add_subnet(:subnet, subnet)
 
             network
           end
 
           # NixOS doesn't use cloud IAM — return empty
           def create_iam(_ctx, _name, _config, _tags)
-            {}
+            Architecture::IamResult.new
           end
 
           # Create control plane server(s) as hcloud_server resources

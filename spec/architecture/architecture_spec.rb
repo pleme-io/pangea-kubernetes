@@ -55,7 +55,7 @@ RSpec.describe Pangea::Kubernetes::Architecture do
 
     it 'creates IAM resources' do
       result = synth.kubernetes_cluster(:test, base_cluster_attrs)
-      expect(result.iam).to be_a(Hash)
+      expect(result.iam).to be_a(Pangea::Contracts::IamResult)
     end
 
     it 'creates the cluster' do

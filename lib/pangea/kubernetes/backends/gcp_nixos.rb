@@ -50,29 +50,30 @@ module Pangea
 
           # Create VPC network + subnet + firewall rules
           def create_network(ctx, name, config, tags)
-            network = {}
+            network = Architecture::GcpNetworkResult.new
 
-            network[:vpc] = ctx.google_compute_network(
+            network.vpc = ctx.google_compute_network(
               :"#{name}_network",
               name: "#{name}-network",
               auto_create_subnetworks: false,
               project: config.project
             )
 
-            network[:subnet] = ctx.google_compute_subnetwork(
+            subnet = ctx.google_compute_subnetwork(
               :"#{name}_subnet",
               name: "#{name}-subnet",
               ip_cidr_range: config.network&.vpc_cidr || '10.0.0.0/20',
               region: config.region,
-              network: network[:vpc].id,
+              network: network.vpc.id,
               project: config.project
             )
+            network.add_subnet(:subnet, subnet)
 
             # Firewall rules for k3s/k8s
-            network[:firewall_internal] = ctx.google_compute_firewall(
+            network.firewall_internal = ctx.google_compute_firewall(
               :"#{name}_fw_internal",
               name: "#{name}-allow-internal",
-              network: network[:vpc].id,
+              network: network.vpc.id,
               project: config.project,
               allow: [
                 { protocol: 'tcp', ports: %w[0-65535] },
@@ -82,10 +83,10 @@ module Pangea
               source_ranges: [config.network&.vpc_cidr || '10.0.0.0/20']
             )
 
-            network[:firewall_external] = ctx.google_compute_firewall(
+            network.firewall_external = ctx.google_compute_firewall(
               :"#{name}_fw_external",
               name: "#{name}-allow-external",
-              network: network[:vpc].id,
+              network: network.vpc.id,
               project: config.project,
               allow: [
                 { protocol: 'tcp', ports: %w[22 80 443 6443] }
@@ -98,9 +99,9 @@ module Pangea
 
           # Service account for GCE instances (minimal permissions)
           def create_iam(ctx, name, config, tags)
-            iam = {}
+            iam = Architecture::GcpIamResult.new
 
-            iam[:node_sa] = ctx.google_service_account(
+            iam.node_sa = ctx.google_service_account(
               :"#{name}_node_sa",
               account_id: "#{name}-nixos-nodes",
               display_name: "#{name} NixOS K8s Node Service Account",
@@ -112,7 +113,7 @@ module Pangea
                 :"#{name}_node_#{role.gsub('.', '_')}",
                 project: config.project,
                 role: "roles/#{role}",
-                member: "serviceAccount:#{iam[:node_sa].email}"
+                member: "serviceAccount:#{iam.node_sa.email}"
               )
             end
 

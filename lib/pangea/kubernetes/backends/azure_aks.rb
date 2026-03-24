@@ -41,38 +41,40 @@ module Pangea
 
           # Create Azure VNet + subnet
           def create_network(ctx, name, config, tags)
-            network = {}
+            network = Architecture::AzureNetworkResult.new
 
-            network[:resource_group] = ctx.azurerm_resource_group(
+            network.resource_group = ctx.azurerm_resource_group(
               :"#{name}_rg",
               name: "#{name}-rg",
               location: config.region,
               tags: tags
             )
 
-            network[:vnet] = ctx.azurerm_virtual_network(
+            network.vnet = ctx.azurerm_virtual_network(
               :"#{name}_vnet",
               name: "#{name}-vnet",
-              resource_group_name: network[:resource_group].name,
+              resource_group_name: network.resource_group.name,
               location: config.region,
               address_space: [config.network&.vpc_cidr || '10.0.0.0/16'],
               tags: tags
             )
+            network.vpc = network.vnet
 
-            network[:subnet] = ctx.azurerm_subnet(
+            subnet = ctx.azurerm_subnet(
               :"#{name}_subnet",
               name: "#{name}-subnet",
-              resource_group_name: network[:resource_group].name,
-              virtual_network_name: network[:vnet].name,
+              resource_group_name: network.resource_group.name,
+              virtual_network_name: network.vnet.name,
               address_prefixes: [config.network&.pod_cidr || '10.0.1.0/24']
             )
+            network.add_subnet(:subnet, subnet)
 
             network
           end
 
           # AKS uses managed identity — no standalone IAM resources needed
           def create_iam(_ctx, _name, _config, _tags)
-            {}
+            Architecture::IamResult.new
           end
 
           # Create AKS cluster with default node pool

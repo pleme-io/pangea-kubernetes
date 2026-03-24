@@ -39,10 +39,10 @@ module Pangea
 
           # Create VPC + subnets for the EKS cluster
           def create_network(ctx, name, config, tags)
-            network = {}
+            network = Architecture::NetworkResult.new
 
             vpc_cidr = config.network&.vpc_cidr || '10.0.0.0/16'
-            network[:vpc] = ctx.aws_vpc(
+            network.vpc = ctx.aws_vpc(
               :"#{name}_vpc",
               cidr_block: vpc_cidr,
               enable_dns_hostnames: true,
@@ -52,14 +52,15 @@ module Pangea
 
             # Create 2 subnets in different AZs (EKS requirement)
             %w[a b].each_with_index do |az_suffix, idx|
-              network[:"subnet_#{az_suffix}"] = ctx.aws_subnet(
+              subnet = ctx.aws_subnet(
                 :"#{name}_subnet_#{az_suffix}",
-                vpc_id: network[:vpc].id,
+                vpc_id: network.vpc.id,
                 cidr_block: "10.0.#{idx}.0/24",
                 availability_zone: "#{config.region}#{az_suffix}",
                 map_public_ip_on_launch: true,
                 tags: tags.merge(Name: "#{name}-subnet-#{az_suffix}")
               )
+              network.add_subnet(:"subnet_#{az_suffix}", subnet)
             end
 
             network
@@ -67,7 +68,7 @@ module Pangea
 
           # Create IAM role for the EKS cluster and node groups
           def create_iam(ctx, name, config, tags)
-            iam = {}
+            iam = Architecture::AwsEksIamResult.new
 
             # Cluster role — use provided role_arn or create one
             unless config.role_arn
@@ -80,16 +81,16 @@ module Pangea
                 }]
               }
 
-              iam[:cluster_role] = ctx.aws_iam_role(
+              iam.cluster_role = ctx.aws_iam_role(
                 :"#{name}_cluster_role",
                 name: "#{name}-eks-cluster-role",
                 assume_role_policy: assume_role_policy,
                 tags: tags.merge(Name: "#{name}-cluster-role")
               )
 
-              iam[:cluster_policy_attachment] = ctx.aws_iam_role_policy_attachment(
+              iam.cluster_policy_attachment = ctx.aws_iam_role_policy_attachment(
                 :"#{name}_cluster_policy",
-                role: iam[:cluster_role].name,
+                role: iam.cluster_role.name,
                 policy_arn: 'arn:aws:iam::aws:policy/AmazonEKSClusterPolicy'
               )
             end
@@ -104,7 +105,7 @@ module Pangea
               }]
             }
 
-            iam[:node_role] = ctx.aws_iam_role(
+            iam.node_role = ctx.aws_iam_role(
               :"#{name}_node_role",
               name: "#{name}-eks-node-role",
               assume_role_policy: node_assume_role_policy,
@@ -114,7 +115,7 @@ module Pangea
             %w[AmazonEKSWorkerNodePolicy AmazonEKS_CNI_Policy AmazonEC2ContainerRegistryReadOnly].each do |policy|
               ctx.aws_iam_role_policy_attachment(
                 :"#{name}_node_#{policy.downcase.gsub(/[^a-z0-9]/, '_')}",
-                role: iam[:node_role].name,
+                role: iam.node_role.name,
                 policy_arn: "arn:aws:iam::aws:policy/#{policy}"
               )
             end
@@ -128,7 +129,11 @@ module Pangea
             subnet_ids = if config.network&.subnet_ids&.any?
                            config.network.subnet_ids
                          elsif result.network
-                           result.network.select { |k, _| k.to_s.start_with?('subnet_') }.values.map(&:id)
+                           if result.network.respond_to?(:subnet_ids)
+                             result.network.subnet_ids
+                           else
+                             result.network.select { |k, _| k.to_s.start_with?('subnet_') }.values.map(&:id)
+                           end
                          else
                            []
                          end

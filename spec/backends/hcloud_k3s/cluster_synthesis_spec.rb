@@ -52,9 +52,10 @@ RSpec.describe Pangea::Kubernetes::Backends::HcloudK3s do
   end
 
   describe '.create_iam' do
-    it 'returns empty hash (NixOS uses no cloud IAM)' do
+    it 'returns empty IamResult (NixOS uses no cloud IAM)' do
       result = described_class.create_iam(ctx, :production, cluster_config, base_tags)
-      expect(result).to eq({})
+      expect(result).to be_a(Pangea::Contracts::IamResult)
+      expect(result.to_h).to eq({})
     end
   end
 

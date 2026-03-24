@@ -53,9 +53,10 @@ RSpec.describe Pangea::Kubernetes::Backends::AzureAks do
   end
 
   describe '.create_iam' do
-    it 'returns empty hash (AKS uses managed identity)' do
+    it 'returns empty IamResult (AKS uses managed identity)' do
       result = described_class.create_iam(ctx, :production, cluster_config, base_tags)
-      expect(result).to eq({})
+      expect(result).to be_a(Pangea::Contracts::IamResult)
+      expect(result.to_h).to eq({})
     end
   end
 
