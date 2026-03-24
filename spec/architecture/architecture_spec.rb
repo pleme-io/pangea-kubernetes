@@ -170,6 +170,74 @@ RSpec.describe Pangea::Kubernetes::Architecture do
         expect(result.config.fluxcd.source_url).to eq('ssh://git@github.com/org/k8s.git')
       end
     end
+
+    context 'VPN config validation' do
+      it 'rejects a flat vpn hash missing :links key' do
+        attrs = base_cluster_attrs.merge(
+          vpn: {
+            interface: 'wg0',
+            address: '10.100.3.2/24',
+            port: 51822,
+            peer_public_key: 'abc',
+            private_key: 'xyz',
+          }
+        )
+        expect { synth.kubernetes_cluster(:test, attrs) }
+          .to raise_error(ArgumentError, /missing :links/)
+      end
+
+      it 'accepts a valid VpnConfig hash with links' do
+        attrs = base_cluster_attrs.merge(
+          vpn: {
+            links: [
+              {
+                name: 'wg0',
+                address: '10.100.0.1/24',
+                listen_port: 51820,
+                peers: [
+                  {
+                    public_key: 'YWJjZGVmZ2hpamtsbW5vcHFyc3R1dnd4eXoxMjM0NTY=',
+                    allowed_ips: ['10.0.0.0/24'],
+                  }
+                ]
+              }
+            ]
+          }
+        )
+        result = synth.kubernetes_cluster(:test, attrs)
+        expect(result.config.vpn).not_to be_nil
+        expect(result.config.vpn.links.length).to eq(1)
+      end
+
+      it 'accepts nil vpn config' do
+        attrs = base_cluster_attrs.dup
+        attrs.delete(:vpn)
+        result = synth.kubernetes_cluster(:test, attrs)
+        expect(result.config.vpn).to be_nil
+      end
+
+      it 'accepts an already-constructed VpnConfig' do
+        vpn = Pangea::Kubernetes::Types::VpnConfig.new(
+          links: [
+            {
+              name: 'wg0',
+              address: '10.100.0.1/24',
+              listen_port: 51820,
+              peers: [
+                {
+                  public_key: 'YWJjZGVmZ2hpamtsbW5vcHFyc3R1dnd4eXoxMjM0NTY=',
+                  allowed_ips: ['10.0.0.0/24'],
+                }
+              ]
+            }
+          ]
+        )
+        attrs = base_cluster_attrs.merge(vpn: vpn)
+        result = synth.kubernetes_cluster(:test, attrs)
+        expect(result.config.vpn).not_to be_nil
+        expect(result.config.vpn.links.length).to eq(1)
+      end
+    end
   end
 
   describe '#kubernetes_node_pool' do
