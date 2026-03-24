@@ -125,6 +125,41 @@ Returns a `ControlPlaneRef` struct that:
 Workers use the same LT+ASG pattern. `create_worker_pool` reads IAM/SG/subnet
 from the `ControlPlaneRef` to ensure parity with the control plane.
 
+### GitOps operator selection
+
+`ClusterConfig.gitops_operator` selects the GitOps bootstrap mechanism:
+- `:fluxcd` (default) — FluxCDConfig passed to cloud-init, manifests auto-deployed
+- `:argocd` — ArgocdConfig passed to cloud-init, ArgoCD bootstrapped at boot
+- `:none` — no GitOps operator, manual cluster management
+
+Cloud-init writes the operator config to `/etc/pangea/cluster-config.json`.
+The NixOS module (blackmatter-kubernetes) reads the JSON and writes operator
+manifests to the k3s auto-deploy directory. Credentials are created by a
+separate systemd service after the API is ready.
+
+### Karpenter IAM (opt-in)
+
+`ClusterConfig.karpenter_enabled = true` creates a Karpenter IRSA IAM role
+and instance profile at Terraform time. Karpenter itself is deployed
+post-cluster via the GitOps repo (HelmRelease).
+
+### Parked mode
+
+System pool `min_size: 0` sets the CP ASG to 0 instances. All infrastructure
+(VPC, IAM, NLB, LTs, key pairs) remains — only instances are terminated.
+Credentials stay static across park/unpark cycles.
+
+### Bootstrap chain
+
+```
+Layer 0 (Terraform):  VPC, IAM, ASG, NLB, Karpenter IAM (opt-in)
+Layer 1 (Cloud-init): NixOS reads config JSON → k3s + GitOps operator
+Layer 2 (GitOps):     Karpenter, workloads, everything else
+```
+
+The akeyless-k8s GitOps repo (`pleme-io/akeyless-k8s`) follows the standard
+FluxCD structure: `clusters/{name}/{flux-system,infrastructure,apps}`.
+
 ## Key types
 
 | Type | Purpose |
