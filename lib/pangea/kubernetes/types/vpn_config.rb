@@ -136,10 +136,18 @@ module Pangea
           return false unless parts.length == 2
 
           ip_str, prefix_str = parts
-          prefix = Integer(prefix_str, 10) rescue return false
+          begin
+            prefix = Integer(prefix_str, 10)
+          rescue ArgumentError
+            return false
+          end
 
           require 'ipaddr'
-          addr = IPAddr.new(ip_str) rescue return false
+          begin
+            addr = IPAddr.new(ip_str)
+          rescue IPAddr::InvalidAddressError
+            return false
+          end
 
           if addr.ipv4?
             prefix >= 0 && prefix <= 32
@@ -167,7 +175,11 @@ module Pangea
           parts = endpoint.rpartition(':')
           return false if parts[0].empty? || parts[2].empty?
 
-          port = Integer(parts[2], 10) rescue return false
+          begin
+            port = Integer(parts[2], 10)
+          rescue ArgumentError
+            return false
+          end
           port >= 1 && port <= 65_535
         end
       end
