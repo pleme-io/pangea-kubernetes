@@ -351,5 +351,188 @@ RSpec.describe 'aws_nixos backend type validation' do
         })
       }.not_to raise_error
     end
+
+    it 'passes type validation for the full akeyless-dev-cluster scenario with VPN NLB' do
+      synth = create_typed_aws_context
+      synth.extend(Pangea::Kubernetes::Architecture)
+
+      # Run the same kubernetes_cluster() call the akeyless-dev template makes
+      result = synth.kubernetes_cluster(:akeyless_dev, {
+        backend: :aws_nixos,
+        kubernetes_version: '1.29',
+        region: 'us-east-1',
+        distribution: :k3s,
+        profile: 'cilium-standard',
+        ami_id: 'ami-nixos-test',
+        key_pair: 'akeyless-dev-key',
+        node_pools: [
+          { name: :system, instance_types: ['t3.medium'], min_size: 1, max_size: 1, disk_size_gb: 50 },
+          { name: :worker, instance_types: ['t3.medium'], min_size: 1, max_size: 4, disk_size_gb: 50 },
+        ],
+        network: { vpc_cidr: '10.0.0.0/16' },
+        tags: {
+          account_id: '376129857990',
+          etcd_backup_bucket: 'akeyless-dev-etcd-backups',
+          ssh_cidr: '10.0.0.0/8',
+          api_cidr: '10.0.0.0/8',
+          vpn_cidr: '10.100.3.0/24',
+        },
+        vpn: {
+          interface: 'wg-akeyless-dev',
+          address: '10.100.3.2/24',
+          port: 51822,
+        },
+        fluxcd: {
+          source_url: 'https://github.com/pleme-io/akeyless-k8s',
+          source_branch: 'main',
+          source_auth: 'token',
+          reconcile_path: './clusters/akeyless-dev',
+          sops_enabled: true,
+        },
+      })
+
+      # Verify typed ArchitectureResult contract
+      expect(result).to be_a(Pangea::Kubernetes::Architecture::ArchitectureResult)
+      expect(result.network).to be_a(Pangea::Kubernetes::Architecture::NetworkResult)
+      expect(result.iam).to be_a(Pangea::Kubernetes::Architecture::IamResult)
+      expect(result.cluster).to be_a(Pangea::Kubernetes::Architecture::ClusterResult)
+
+      # Verify NetworkResult typed accessors
+      expect(result.network.vpc).not_to be_nil
+      expect(result.network.igw).not_to be_nil
+      expect(result.network.route_table).not_to be_nil
+      expect(result.network.sg).not_to be_nil
+      expect(result.network.etcd_bucket).not_to be_nil
+      expect(result.network.subnets).to be_an(Array)
+      expect(result.network.subnets.length).to eq(2)
+      expect(result.network.public_subnets).to eq(result.network.subnets)
+      expect(result.network.subnet_ids).to be_an(Array)
+      expect(result.network.subnet_ids.length).to eq(2)
+
+      # Verify backward-compat hash access
+      expect(result.network[:vpc]).to eq(result.network.vpc)
+      expect(result.network[:sg]).to eq(result.network.sg)
+      expect(result.network[:etcd_bucket]).to eq(result.network.etcd_bucket)
+
+      # Verify IamResult typed accessors
+      expect(result.iam.role).not_to be_nil
+      expect(result.iam.instance_profile).not_to be_nil
+      expect(result.iam.ecr_policy).not_to be_nil
+      expect(result.iam.etcd_policy).not_to be_nil
+      expect(result.iam.logs_policy).not_to be_nil
+      expect(result.iam.ec2_policy).not_to be_nil
+      expect(result.iam.ssm_policy).not_to be_nil
+      expect(result.iam.log_group).not_to be_nil
+
+      # Verify ClusterResult typed accessors
+      expect(result.cluster.nlb).not_to be_nil
+      expect(result.cluster.asg).not_to be_nil
+      expect(result.cluster.launch_template).not_to be_nil
+      expect(result.cluster.target_group).not_to be_nil
+      expect(result.cluster.listener).not_to be_nil
+      expect(result.cluster.security_group).not_to be_nil
+      expect(result.cluster.security_group.id).not_to be_nil
+
+      # Now exercise the VPN NLB resources (same calls as akeyless_dev_cluster.rb)
+      expect {
+        synth.aws_lb(:vpn_wireguard, {
+          name: 'akeyless-dev-vpn',
+          internal: false,
+          load_balancer_type: 'network',
+          subnet_ids: result.network.subnet_ids,
+          tags: { Name: 'akeyless-dev-vpn-nlb' },
+        })
+      }.not_to raise_error
+
+      expect {
+        synth.aws_lb_target_group(:vpn_wireguard, {
+          name: 'akeyless-dev-vpn-wg',
+          port: 51822,
+          protocol: 'UDP',
+          vpc_id: result.network.vpc.id,
+          health_check: { protocol: 'TCP', port: 22 },
+        })
+      }.not_to raise_error
+
+      vpn_nlb = synth.find_resource(:aws_lb, :vpn_wireguard)
+      vpn_tg = synth.find_resource(:aws_lb_target_group, :vpn_wireguard)
+
+      expect {
+        synth.aws_lb_listener(:vpn_wireguard, {
+          load_balancer_arn: vpn_nlb[:ref].arn,
+          port: 51822,
+          protocol: 'UDP',
+          default_action: [{ type: 'forward', target_group_arn: vpn_tg[:ref].arn }],
+        })
+      }.not_to raise_error
+
+      expect {
+        synth.aws_autoscaling_attachment(:vpn_cp, {
+          autoscaling_group_name: result.cluster.asg.ref(:name),
+          lb_target_group_arn: vpn_tg[:ref].arn,
+        })
+      }.not_to raise_error
+    end
+  end
+
+  # ── Typed ArchitectureResult Contract ──────────────────────────────
+
+  describe 'ArchitectureResult typed contract' do
+    it 'NetworkResult provides subnets array and public_subnets alias' do
+      network = Pangea::Kubernetes::Backends::AwsNixos.create_network(
+        typed_ctx, :contract, cluster_config, base_tags
+      )
+      expect(network).to be_a(Pangea::Kubernetes::Architecture::NetworkResult)
+      expect(network.subnets.length).to eq(2)
+      expect(network.public_subnets).to eq(network.subnets)
+      expect(network.subnet_ids.all? { |id| id.is_a?(String) }).to be true
+    end
+
+    it 'IamResult provides named accessors for all policies' do
+      iam = Pangea::Kubernetes::Backends::AwsNixos.create_iam(
+        typed_ctx, :contract, cluster_config, base_tags
+      )
+      expect(iam).to be_a(Pangea::Kubernetes::Architecture::IamResult)
+      expect(iam.role).not_to be_nil
+      expect(iam.instance_profile).not_to be_nil
+      expect(iam.log_group).not_to be_nil
+    end
+
+    it 'ClusterResult wraps ControlPlaneRef and exposes security_group' do
+      network = Pangea::Kubernetes::Backends::AwsNixos.create_network(
+        typed_ctx, :contract, cluster_config, base_tags
+      )
+      iam = Pangea::Kubernetes::Backends::AwsNixos.create_iam(
+        typed_ctx, :contract, cluster_config, base_tags
+      )
+      arch = Pangea::Kubernetes::Architecture::ArchitectureResult.new(:contract, cluster_config)
+      arch.network = network
+      arch.iam = iam
+      cp_ref = Pangea::Kubernetes::Backends::AwsNixos.create_cluster(
+        typed_ctx, :contract, cluster_config, arch, base_tags
+      )
+      # Setting cluster on ArchitectureResult wraps it in ClusterResult
+      arch.cluster = cp_ref
+      expect(arch.cluster).to be_a(Pangea::Kubernetes::Architecture::ClusterResult)
+      expect(arch.cluster.nlb).to eq(cp_ref.nlb)
+      expect(arch.cluster.asg).to eq(cp_ref.asg)
+      expect(arch.cluster.security_group).to be_a(Pangea::Kubernetes::Architecture::SecurityGroupAccessor)
+      expect(arch.cluster.security_group.id).not_to be_nil
+    end
+
+    it 'health_check port coerces Integer to String' do
+      # This verifies the coercion fix: port: 6443 (Integer) must become '6443' (String)
+      expect {
+        Pangea::Resources::AWS::Types::TargetGroupHealthCheck.new(
+          protocol: 'TCP', port: 6443
+        )
+      }.not_to raise_error
+
+      hc = Pangea::Resources::AWS::Types::TargetGroupHealthCheck.new(
+        protocol: 'TCP', port: 6443
+      )
+      expect(hc.port).to eq('6443')
+      expect(hc.port).to be_a(String)
+    end
   end
 end

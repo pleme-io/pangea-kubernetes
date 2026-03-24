@@ -139,7 +139,10 @@ RSpec.describe 'Cross-Backend Interface Parity' do
       all_backends.each do |backend|
         config = Pangea::Kubernetes::Types::ClusterConfig.new(configs[backend.backend_name])
         result = backend.create_network(create_mock_context, :test, config, tags)
-        expect(result).to be_a(Hash), "#{backend.backend_name} create_network should return Hash"
+        expect(result).to respond_to(:to_h),
+          "#{backend.backend_name} create_network should return a hash-like object (responds to :to_h)"
+        expect(result).to respond_to(:[]),
+          "#{backend.backend_name} create_network should support [] access"
       end
     end
   end
@@ -158,7 +161,10 @@ RSpec.describe 'Cross-Backend Interface Parity' do
 
         config = Pangea::Kubernetes::Types::ClusterConfig.new(config_attrs)
         result = backend.create_iam(create_mock_context, :test, config, tags)
-        expect(result).to be_a(Hash), "#{backend.backend_name} create_iam should return Hash"
+        expect(result).to respond_to(:to_h),
+          "#{backend.backend_name} create_iam should return a hash-like object (responds to :to_h)"
+        expect(result).to respond_to(:[]),
+          "#{backend.backend_name} create_iam should support [] access"
       end
     end
   end

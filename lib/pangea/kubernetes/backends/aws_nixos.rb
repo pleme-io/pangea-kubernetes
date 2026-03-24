@@ -70,30 +70,30 @@ module Pangea
           # ── Phase 1: Network + Storage ────────────────────────────────
           def create_network(ctx, name, config, tags)
             validate_cidr_restrictions!(config)
-            network = {}
+            network = Architecture::NetworkResult.new
 
             # S3 bucket for etcd backups (versioned, encrypted, no public access)
             etcd_bucket = config.tags[:etcd_backup_bucket] || config.tags['etcd_backup_bucket'] || "#{name}-etcd-backups"
-            network[:etcd_bucket] = ctx.aws_s3_bucket(
+            network.etcd_bucket = ctx.aws_s3_bucket(
               :"#{name}_etcd",
               bucket: etcd_bucket,
               tags: tags.merge(Name: etcd_bucket)
             )
             ctx.aws_s3_bucket_versioning(
               :"#{name}_etcd_versioning",
-              bucket: network[:etcd_bucket].id,
+              bucket: network.etcd_bucket.id,
               versioning_configuration: { status: 'Enabled' }
             )
             ctx.aws_s3_bucket_encryption(
               :"#{name}_etcd_encryption",
-              bucket: network[:etcd_bucket].id,
+              bucket: network.etcd_bucket.id,
               server_side_encryption_configuration: {
                 rule: [{ apply_server_side_encryption_by_default: { sse_algorithm: 'AES256' } }],
               }
             )
             ctx.aws_s3_bucket_public_access_block(
               :"#{name}_etcd_public_access",
-              bucket: network[:etcd_bucket].id,
+              bucket: network.etcd_bucket.id,
               block_public_acls: true,
               block_public_policy: true,
               ignore_public_acls: true,
@@ -101,7 +101,7 @@ module Pangea
             )
 
             vpc_cidr = config.network&.vpc_cidr || '10.0.0.0/16'
-            network[:vpc] = ctx.aws_vpc(
+            network.vpc = ctx.aws_vpc(
               :"#{name}_vpc",
               cidr_block: vpc_cidr,
               enable_dns_hostnames: true,
@@ -110,17 +110,17 @@ module Pangea
               lifecycle: { prevent_destroy: true }
             )
 
-            network[:igw] = ctx.aws_internet_gateway(
+            network.igw = ctx.aws_internet_gateway(
               :"#{name}_igw",
-              vpc_id: network[:vpc].id,
+              vpc_id: network.vpc.id,
               tags: tags.merge(Name: "#{name}-igw")
             )
 
             # Route table for IGW (required for internet access)
-            network[:route_table] = ctx.aws_route_table(
+            network.route_table = ctx.aws_route_table(
               :"#{name}_rt",
-              vpc_id: network[:vpc].id,
-              routes: [{ cidr_block: '0.0.0.0/0', gateway_id: network[:igw].id }],
+              vpc_id: network.vpc.id,
+              routes: [{ cidr_block: '0.0.0.0/0', gateway_id: network.igw.id }],
               tags: tags.merge(Name: "#{name}-rt")
             )
 
@@ -128,28 +128,28 @@ module Pangea
             %w[a b].each_with_index do |az_suffix, idx|
               subnet = ctx.aws_subnet(
                 :"#{name}_subnet_#{az_suffix}",
-                vpc_id: network[:vpc].id,
+                vpc_id: network.vpc.id,
                 cidr_block: "10.0.#{idx}.0/24",
                 availability_zone: "#{config.region}#{az_suffix}",
                 map_public_ip_on_launch: true,
                 tags: tags.merge(Name: "#{name}-subnet-#{az_suffix}")
               )
-              network[:"subnet_#{az_suffix}"] = subnet
+              network.add_subnet(:"subnet_#{az_suffix}", subnet)
 
               # Associate subnet with route table
               ctx.aws_route_table_association(
                 :"#{name}_rta_#{az_suffix}",
                 subnet_id: subnet.id,
-                route_table_id: network[:route_table].id
+                route_table_id: network.route_table.id
               )
             end
 
             # Security group — K3s ports restricted to VPC CIDR
-            network[:sg] = ctx.aws_security_group(
+            network.sg = ctx.aws_security_group(
               :"#{name}_sg",
               name: "#{name}-k8s-nodes",
               description: "Security group for #{name} k8s/k3s NixOS nodes",
-              vpc_id: network[:vpc].id,
+              vpc_id: network.vpc.id,
               ingress_rules: aws_security_group_rules(config, vpc_cidr),
               egress_rules: [{ from_port: 0, to_port: 0, protocol: '-1', cidr_blocks: ['0.0.0.0/0'] }],
               tags: tags.merge(Name: "#{name}-sg")
@@ -160,7 +160,7 @@ module Pangea
 
           # ── Phase 2: IAM (least-privilege) ───────────────────────────
           def create_iam(ctx, name, config, tags)
-            iam = {}
+            iam = Architecture::IamResult.new
             account_id = config.tags[:account_id] || config.tags['account_id']
             if account_id.nil? || account_id == 'CHANGEME'
               raise ArgumentError,
@@ -181,7 +181,7 @@ module Pangea
               }]
             }
 
-            iam[:role] = ctx.aws_iam_role(
+            iam.role = ctx.aws_iam_role(
               :"#{name}_node_role",
               name: "#{name}-node-role",
               description: "Least-privilege role for #{name} K3s cluster nodes",
@@ -191,17 +191,17 @@ module Pangea
               lifecycle: { prevent_destroy: true }
             )
 
-            iam[:instance_profile] = ctx.aws_iam_instance_profile(
+            iam.instance_profile = ctx.aws_iam_instance_profile(
               :"#{name}_node_profile",
               name: "#{name}-node-profile",
-              role: iam[:role].ref(:name),
+              role: iam.role.ref(:name),
               tags: tags.merge(Name: "#{name}-node-profile")
             )
 
             # ── Policy: ECR Read-Only ────────────────────────────────
             ecr_resource = ["arn:aws:ecr:#{region}:#{account_id}:repository/*"]
 
-            iam[:ecr_policy] = ctx.aws_iam_policy(
+            iam.ecr_policy = ctx.aws_iam_policy(
               :"#{name}_ecr_read",
               name: "#{name}-ecr-read",
               description: "ECR read-only for #{name} K3s nodes",
@@ -228,10 +228,10 @@ module Pangea
               tags: tags,
             )
             ctx.aws_iam_role_policy_attachment(:"#{name}_ecr_read",
-                                              role: iam[:role].ref(:name), policy_arn: iam[:ecr_policy].ref(:arn))
+                                              role: iam.role.ref(:name), policy_arn: iam.ecr_policy.ref(:arn))
 
             # ── Policy: S3 Etcd Backup ───────────────────────────────
-            iam[:etcd_policy] = ctx.aws_iam_policy(
+            iam.etcd_policy = ctx.aws_iam_policy(
               :"#{name}_etcd_backup",
               name: "#{name}-etcd-backup",
               description: "S3 etcd backup access for #{name} K3s nodes",
@@ -247,12 +247,12 @@ module Pangea
               tags: tags,
             )
             ctx.aws_iam_role_policy_attachment(:"#{name}_etcd_backup",
-                                              role: iam[:role].ref(:name), policy_arn: iam[:etcd_policy].ref(:arn))
+                                              role: iam.role.ref(:name), policy_arn: iam.etcd_policy.ref(:arn))
 
             # ── Policy: CloudWatch Logs ──────────────────────────────
             logs_resource = ["arn:aws:logs:#{region}:#{account_id}:log-group:#{log_group}:*"]
 
-            iam[:logs_policy] = ctx.aws_iam_policy(
+            iam.logs_policy = ctx.aws_iam_policy(
               :"#{name}_logs",
               name: "#{name}-cloudwatch-logs",
               description: "CloudWatch log access for #{name} K3s nodes",
@@ -268,7 +268,7 @@ module Pangea
               tags: tags,
             )
             ctx.aws_iam_role_policy_attachment(:"#{name}_logs",
-                                              role: iam[:role].ref(:name), policy_arn: iam[:logs_policy].ref(:arn))
+                                              role: iam.role.ref(:name), policy_arn: iam.logs_policy.ref(:arn))
 
             # ── Policy: EC2 Describe (node discovery) ────────────────
             ec2_statement = {
@@ -287,7 +287,7 @@ module Pangea
             }
             ec2_statement[:Condition] = { StringEquals: { 'ec2:Region': region } }
 
-            iam[:ec2_policy] = ctx.aws_iam_policy(
+            iam.ec2_policy = ctx.aws_iam_policy(
               :"#{name}_ec2_describe",
               name: "#{name}-ec2-describe",
               description: "EC2 read-only metadata for #{name} K3s nodes",
@@ -295,10 +295,10 @@ module Pangea
               tags: tags,
             )
             ctx.aws_iam_role_policy_attachment(:"#{name}_ec2_describe",
-                                              role: iam[:role].ref(:name), policy_arn: iam[:ec2_policy].ref(:arn))
+                                              role: iam.role.ref(:name), policy_arn: iam.ec2_policy.ref(:arn))
 
             # ── Policy: SSM Session Manager ──────────────────────────
-            iam[:ssm_policy] = ctx.aws_iam_policy(
+            iam.ssm_policy = ctx.aws_iam_policy(
               :"#{name}_ssm",
               name: "#{name}-ssm-session",
               description: "SSM session access for #{name} K3s nodes",
@@ -325,10 +325,10 @@ module Pangea
               tags: tags,
             )
             ctx.aws_iam_role_policy_attachment(:"#{name}_ssm",
-                                              role: iam[:role].ref(:name), policy_arn: iam[:ssm_policy].ref(:arn))
+                                              role: iam.role.ref(:name), policy_arn: iam.ssm_policy.ref(:arn))
 
             # ── CloudWatch Log Group ─────────────────────────────────
-            iam[:log_group] = ctx.aws_cloudwatch_log_group(
+            iam.log_group = ctx.aws_cloudwatch_log_group(
               :"#{name}_logs",
               name: log_group,
               retention_in_days: 30,
@@ -346,7 +346,7 @@ module Pangea
                 }]
               }
 
-              iam[:karpenter_role] = ctx.aws_iam_role(
+              iam.karpenter_role = ctx.aws_iam_role(
                 :"#{name}_karpenter_role",
                 name: "#{name}-karpenter-role",
                 description: "Karpenter node role for #{name} (IRSA)",
@@ -355,10 +355,10 @@ module Pangea
                 tags: tags.merge(Name: "#{name}-karpenter-role")
               )
 
-              iam[:karpenter_profile] = ctx.aws_iam_instance_profile(
+              iam.karpenter_profile = ctx.aws_iam_instance_profile(
                 :"#{name}_karpenter_profile",
                 name: "#{name}-karpenter-profile",
-                role: iam[:karpenter_role].ref(:name),
+                role: iam.karpenter_role.ref(:name),
                 tags: tags.merge(Name: "#{name}-karpenter-profile")
               )
             end
@@ -372,8 +372,8 @@ module Pangea
             instance_type = system_pool.instance_types.first
             ami_id = config.ami_id || config.nixos&.image_id || 'ami-nixos-latest'
             subnet_ids = resolve_subnet_ids(config, result)
-            sg_id = result.network&.dig(:sg)&.id
-            instance_profile_name = result.iam&.dig(:instance_profile)&.ref(:name)
+            sg_id = result.network&.sg&.id
+            instance_profile_name = result.iam&.instance_profile&.ref(:name)
             key_name = config.key_pair
 
             cloud_init = build_server_cloud_init(name, config, 0, result)
@@ -448,7 +448,7 @@ module Pangea
               name: "#{name}-cp-tg",
               port: 6443,
               protocol: 'TCP',
-              vpc_id: result.network&.dig(:vpc)&.id,
+              vpc_id: result.network&.vpc&.id,
               target_type: 'instance',
               health_check: {
                 protocol: 'TCP',
@@ -561,7 +561,13 @@ module Pangea
             if config.network&.subnet_ids&.any?
               config.network.subnet_ids
             elsif result.network
-              result.network.select { |k, _| k.to_s.start_with?('subnet_') }.values.map(&:id)
+              # NetworkResult provides .subnet_ids directly
+              if result.network.respond_to?(:subnet_ids)
+                result.network.subnet_ids
+              else
+                # Fallback for raw hash (backward compatibility)
+                result.network.select { |k, _| k.to_s.start_with?('subnet_') }.values.map(&:id)
+              end
             else
               []
             end
