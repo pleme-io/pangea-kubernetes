@@ -198,7 +198,7 @@ RSpec.describe 'Cross-Backend Interface Parity' do
         end
         expect(cp_resource).not_to be_nil, "#{backend.backend_name} should create control plane resource"
 
-        user_data = cp_resource[:attrs][:user_data] || cp_resource[:attrs][:custom_data] || cp_resource[:attrs].dig(:metadata, 'user-data')
+        user_data = cp_resource[:attrs].dig(:launch_template_data, :user_data) || cp_resource[:attrs][:user_data] || cp_resource[:attrs][:custom_data] || cp_resource[:attrs].dig(:metadata, 'user-data')
         expect(user_data).to include('"distribution":"k3s"'),
           "#{backend.backend_name} should include distribution in cloud-init"
         expect(user_data).to include('"profile":"cilium-standard"'),

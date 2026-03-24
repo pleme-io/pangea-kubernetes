@@ -120,7 +120,7 @@ module Pangea
             network[:route_table] = ctx.aws_route_table(
               :"#{name}_rt",
               vpc_id: network[:vpc].id,
-              route: [{ cidr_block: '0.0.0.0/0', gateway_id: network[:igw].id }],
+              routes: [{ cidr_block: '0.0.0.0/0', gateway_id: network[:igw].id }],
               tags: tags.merge(Name: "#{name}-rt")
             )
 
@@ -150,8 +150,8 @@ module Pangea
               name: "#{name}-k8s-nodes",
               description: "Security group for #{name} k8s/k3s NixOS nodes",
               vpc_id: network[:vpc].id,
-              ingress: aws_security_group_rules(config, vpc_cidr),
-              egress: [{ from_port: 0, to_port: 0, protocol: '-1', cidr_blocks: ['0.0.0.0/0'] }],
+              ingress_rules: aws_security_group_rules(config, vpc_cidr),
+              egress_rules: [{ from_port: 0, to_port: 0, protocol: '-1', cidr_blocks: ['0.0.0.0/0'] }],
               tags: tags.merge(Name: "#{name}-sg")
             )
 
@@ -373,7 +373,7 @@ module Pangea
             ami_id = config.ami_id || config.nixos&.image_id || 'ami-nixos-latest'
             subnet_ids = resolve_subnet_ids(config, result)
             sg_id = result.network&.dig(:sg)&.id
-            instance_profile_name = result.iam&.dig(:instance_profile)&.name
+            instance_profile_name = result.iam&.dig(:instance_profile)&.ref(:name)
             key_name = config.key_pair
 
             cloud_init = build_server_cloud_init(name, config, 0, result)
@@ -381,34 +381,36 @@ module Pangea
             lt = ctx.aws_launch_template(
               :"#{name}_cp_lt",
               name: "#{name}-cp-lt",
-              image_id: ami_id,
-              instance_type: instance_type,
-              key_name: key_name,
-              user_data: cloud_init,
-              iam_instance_profile: instance_profile_name ? { name: instance_profile_name } : nil,
-              vpc_security_group_ids: sg_id ? [sg_id] : [],
-              metadata_options: {
-                http_endpoint: 'enabled',
-                http_tokens: 'required',
-                http_put_response_hop_limit: 1,
-                instance_metadata_tags: 'enabled',
+              launch_template_data: {
+                image_id: ami_id,
+                instance_type: instance_type,
+                key_name: key_name,
+                user_data: cloud_init,
+                iam_instance_profile: instance_profile_name ? { name: instance_profile_name } : nil,
+                vpc_security_group_ids: sg_id ? [sg_id] : [],
+                metadata_options: {
+                  http_endpoint: 'enabled',
+                  http_tokens: 'required',
+                  http_put_response_hop_limit: 1,
+                  instance_metadata_tags: 'enabled',
+                },
+                block_device_mappings: [{
+                  device_name: '/dev/xvda',
+                  ebs: {
+                    volume_size: system_pool.disk_size_gb,
+                    volume_type: 'gp3',
+                    encrypted: true,
+                  }
+                }],
+                tag_specifications: [{
+                  resource_type: 'instance',
+                  tags: tags.merge(
+                    Name: "#{name}-cp",
+                    Role: 'control-plane',
+                    Distribution: config.distribution.to_s
+                  )
+                }],
               },
-              block_device_mappings: [{
-                device_name: '/dev/xvda',
-                ebs: {
-                  volume_size: system_pool.disk_size_gb,
-                  volume_type: 'gp3',
-                  encrypted: true,
-                }
-              }],
-              tag_specifications: [{
-                resource_type: 'instance',
-                tags: tags.merge(
-                  Name: "#{name}-cp",
-                  Role: 'control-plane',
-                  Distribution: config.distribution.to_s
-                )
-              }],
               tags: tags.merge(Name: "#{name}-cp-lt")
             )
 
@@ -437,7 +439,7 @@ module Pangea
               name: "#{name}-cp-nlb",
               internal: true,
               load_balancer_type: 'network',
-              subnets: subnet_ids,
+              subnet_ids: subnet_ids,
               tags: tags.merge(Name: "#{name}-cp-nlb")
             )
 
@@ -450,7 +452,7 @@ module Pangea
               target_type: 'instance',
               health_check: {
                 protocol: 'TCP',
-                port: 6443,
+                port: '6443',
                 healthy_threshold: 3,
                 unhealthy_threshold: 3,
                 interval: 30,
@@ -502,34 +504,36 @@ module Pangea
             lt = ctx.aws_launch_template(
               :"#{pool_name}_lt",
               name: "#{name}-#{pool_config.name}-lt",
-              image_id: ami_id,
-              instance_type: instance_type,
-              key_name: key_name,
-              user_data: cloud_init,
-              iam_instance_profile: instance_profile_name ? { name: instance_profile_name } : nil,
-              vpc_security_group_ids: sg_id ? [sg_id] : [],
-              metadata_options: {
-                http_endpoint: 'enabled',
-                http_tokens: 'required',
-                http_put_response_hop_limit: 1,
-                instance_metadata_tags: 'enabled',
+              launch_template_data: {
+                image_id: ami_id,
+                instance_type: instance_type,
+                key_name: key_name,
+                user_data: cloud_init,
+                iam_instance_profile: instance_profile_name ? { name: instance_profile_name } : nil,
+                vpc_security_group_ids: sg_id ? [sg_id] : [],
+                metadata_options: {
+                  http_endpoint: 'enabled',
+                  http_tokens: 'required',
+                  http_put_response_hop_limit: 1,
+                  instance_metadata_tags: 'enabled',
+                },
+                block_device_mappings: [{
+                  device_name: '/dev/xvda',
+                  ebs: {
+                    volume_size: pool_config.disk_size_gb,
+                    volume_type: 'gp3',
+                    encrypted: true,
+                  }
+                }],
+                tag_specifications: [{
+                  resource_type: 'instance',
+                  tags: tags.merge(
+                    Name: "#{name}-#{pool_config.name}",
+                    Role: 'worker',
+                    NodePool: pool_config.name.to_s
+                  )
+                }],
               },
-              block_device_mappings: [{
-                device_name: '/dev/xvda',
-                ebs: {
-                  volume_size: pool_config.disk_size_gb,
-                  volume_type: 'gp3',
-                  encrypted: true,
-                }
-              }],
-              tag_specifications: [{
-                resource_type: 'instance',
-                tags: tags.merge(
-                  Name: "#{name}-#{pool_config.name}",
-                  Role: 'worker',
-                  NodePool: pool_config.name.to_s
-                )
-              }],
               tags: tags.merge(Name: "#{name}-#{pool_config.name}-lt")
             )
 

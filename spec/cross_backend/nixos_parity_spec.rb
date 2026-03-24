@@ -71,7 +71,7 @@ RSpec.describe 'NixOS backend parity' do
         cp_name = (name == :aws_nixos) ? :test_cp_lt : :test_cp_0
         cp_resources = ctx.created_resources.select { |r| r[:name] == cp_name }
         cp = cp_resources.first
-        cloud_init = cp[:attrs][:user_data] || cp[:attrs][:custom_data] || cp[:attrs].dig(:metadata, 'user-data')
+        cloud_init = cp[:attrs].dig(:launch_template_data, :user_data) || cp[:attrs][:user_data] || cp[:attrs][:custom_data] || cp[:attrs].dig(:metadata, 'user-data')
 
         cloud_init_contents[name] = cloud_init
       end

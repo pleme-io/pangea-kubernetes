@@ -78,7 +78,7 @@ module Pangea
                   Principal: { Service: 'eks.amazonaws.com' },
                   Action: 'sts:AssumeRole'
                 }]
-              }.to_json
+              }
 
               iam[:cluster_role] = ctx.aws_iam_role(
                 :"#{name}_cluster_role",
@@ -102,7 +102,7 @@ module Pangea
                 Principal: { Service: 'ec2.amazonaws.com' },
                 Action: 'sts:AssumeRole'
               }]
-            }.to_json
+            }
 
             iam[:node_role] = ctx.aws_iam_role(
               :"#{name}_node_role",

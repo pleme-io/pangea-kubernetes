@@ -217,37 +217,37 @@ RSpec.describe 'AwsNixos security hardening' do
 
     it 'SSH is NOT open to 0.0.0.0/0' do
       sg = ctx.find_resource(:aws_security_group, :kazoku_sg)
-      ssh_rule = sg[:attrs][:ingress].find { |r| r[:description] == 'SSH' }
+      ssh_rule = sg[:attrs][:ingress_rules].find { |r| r[:description] == 'SSH' }
       expect(ssh_rule[:cidr_blocks]).not_to include('0.0.0.0/0')
     end
 
     it 'K8s API is NOT open to 0.0.0.0/0' do
       sg = ctx.find_resource(:aws_security_group, :kazoku_sg)
-      api_rule = sg[:attrs][:ingress].find { |r| r[:description] == 'K8s API' }
+      api_rule = sg[:attrs][:ingress_rules].find { |r| r[:description] == 'K8s API' }
       expect(api_rule[:cidr_blocks]).not_to include('0.0.0.0/0')
     end
 
     it 'etcd is restricted to VPC CIDR' do
       sg = ctx.find_resource(:aws_security_group, :kazoku_sg)
-      etcd_rule = sg[:attrs][:ingress].find { |r| r[:description] == 'etcd' }
+      etcd_rule = sg[:attrs][:ingress_rules].find { |r| r[:description] == 'etcd' }
       expect(etcd_rule[:cidr_blocks]).to eq(['10.0.0.0/16'])
     end
 
     it 'kubelet is restricted to VPC CIDR' do
       sg = ctx.find_resource(:aws_security_group, :kazoku_sg)
-      kubelet_rule = sg[:attrs][:ingress].find { |r| r[:description] == 'Kubelet' }
+      kubelet_rule = sg[:attrs][:ingress_rules].find { |r| r[:description] == 'Kubelet' }
       expect(kubelet_rule[:cidr_blocks]).to eq(['10.0.0.0/16'])
     end
 
     it 'VXLAN is restricted to VPC CIDR' do
       sg = ctx.find_resource(:aws_security_group, :kazoku_sg)
-      vxlan_rule = sg[:attrs][:ingress].find { |r| r[:description] == 'VXLAN' }
+      vxlan_rule = sg[:attrs][:ingress_rules].find { |r| r[:description] == 'VXLAN' }
       expect(vxlan_rule[:cidr_blocks]).to eq(['10.0.0.0/16'])
     end
 
     it 'only HTTP and HTTPS are public' do
       sg = ctx.find_resource(:aws_security_group, :kazoku_sg)
-      public_rules = sg[:attrs][:ingress].select { |r| r[:cidr_blocks].include?('0.0.0.0/0') }
+      public_rules = sg[:attrs][:ingress_rules].select { |r| r[:cidr_blocks].include?('0.0.0.0/0') }
       public_descriptions = public_rules.map { |r| r[:description] }
       expect(public_descriptions).to contain_exactly('HTTP', 'HTTPS')
     end
@@ -321,23 +321,23 @@ RSpec.describe 'AwsNixos security hardening' do
 
     it 'requires IMDSv2 (http_tokens: required) on launch template' do
       lt = ctx.find_resource(:aws_launch_template, :kazoku_cp_lt)
-      expect(lt[:attrs][:metadata_options][:http_tokens]).to eq('required')
+      expect(lt[:attrs][:launch_template_data][:metadata_options][:http_tokens]).to eq('required')
     end
 
     it 'limits IMDS hop count to 1 on launch template' do
       lt = ctx.find_resource(:aws_launch_template, :kazoku_cp_lt)
-      expect(lt[:attrs][:metadata_options][:http_put_response_hop_limit]).to eq(1)
+      expect(lt[:attrs][:launch_template_data][:metadata_options][:http_put_response_hop_limit]).to eq(1)
     end
 
     it 'encrypts volumes via launch template' do
       lt = ctx.find_resource(:aws_launch_template, :kazoku_cp_lt)
-      ebs = lt[:attrs][:block_device_mappings].first[:ebs]
+      ebs = lt[:attrs][:launch_template_data][:block_device_mappings].first[:ebs]
       expect(ebs[:encrypted]).to be(true)
     end
 
     it 'uses gp3 volume type via launch template' do
       lt = ctx.find_resource(:aws_launch_template, :kazoku_cp_lt)
-      ebs = lt[:attrs][:block_device_mappings].first[:ebs]
+      ebs = lt[:attrs][:launch_template_data][:block_device_mappings].first[:ebs]
       expect(ebs[:volume_type]).to eq('gp3')
     end
 

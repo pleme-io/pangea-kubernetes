@@ -20,7 +20,7 @@ RSpec.describe 'AWS NixOS kubernetes distribution' do
 
       Pangea::Kubernetes::Backends::AwsNixos.create_network(ctx, :test, config, base_tags)
       sg = ctx.find_resource(:aws_security_group, :test_sg)
-      rules = sg[:attrs][:ingress]
+      rules = sg[:attrs][:ingress_rules]
       cm_rule = rules.find { |r| r[:description] == 'controller-manager' }
       sched_rule = rules.find { |r| r[:description] == 'scheduler' }
       expect(cm_rule).not_to be_nil
@@ -42,7 +42,7 @@ RSpec.describe 'AWS NixOS kubernetes distribution' do
 
       Pangea::Kubernetes::Backends::AwsNixos.create_network(ctx, :test, config, base_tags)
       sg = ctx.find_resource(:aws_security_group, :test_sg)
-      rules = sg[:attrs][:ingress]
+      rules = sg[:attrs][:ingress_rules]
       cm_rule = rules.find { |r| r[:description] == 'controller-manager' }
       sched_rule = rules.find { |r| r[:description] == 'scheduler' }
       expect(cm_rule).to be_nil
@@ -93,7 +93,7 @@ RSpec.describe 'AWS NixOS kubernetes distribution' do
 
       Pangea::Kubernetes::Backends::AwsNixos.create_cluster(ctx, :test, config, arch_result, base_tags)
       lt = ctx.find_resource(:aws_launch_template, :test_cp_lt)
-      expect(lt[:attrs][:image_id]).to eq('ami-nixos-from-config')
+      expect(lt[:attrs][:launch_template_data][:image_id]).to eq('ami-nixos-from-config')
     end
 
     it 'falls back to ami-nixos-latest when no ami_id or nixos config' do
@@ -114,7 +114,7 @@ RSpec.describe 'AWS NixOS kubernetes distribution' do
 
       Pangea::Kubernetes::Backends::AwsNixos.create_cluster(ctx, :test, config, arch_result, base_tags)
       lt = ctx.find_resource(:aws_launch_template, :test_cp_lt)
-      expect(lt[:attrs][:image_id]).to eq('ami-nixos-latest')
+      expect(lt[:attrs][:launch_template_data][:image_id]).to eq('ami-nixos-latest')
     end
   end
 end
