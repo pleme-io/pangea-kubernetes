@@ -99,14 +99,16 @@ module TypedContextHelpers
   # Create a typed context for GCP resources
   def create_typed_gcp_context
     require 'pangea-gcp'
+    require 'pangea/resources/google'
     ctx = TypedSynthesizerContext.new
-    ctx.extend(Pangea::Resources::GCP)
+    ctx.extend(Pangea::Resources::Google)
     ctx
   end
 
   # Create a typed context for Azure resources
   def create_typed_azure_context
     require 'pangea-azure'
+    require 'pangea/resources/azure'
     ctx = TypedSynthesizerContext.new
     ctx.extend(Pangea::Resources::Azure)
     ctx
@@ -115,8 +117,9 @@ module TypedContextHelpers
   # Create a typed context for Hetzner Cloud resources
   def create_typed_hcloud_context
     require 'pangea-hcloud'
+    require 'pangea/resources/hcloud'
     ctx = TypedSynthesizerContext.new
-    ctx.extend(Pangea::Resources::HCloud)
+    ctx.extend(Pangea::Resources::Hcloud)
     ctx
   end
 end

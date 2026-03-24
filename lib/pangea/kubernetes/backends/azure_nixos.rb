@@ -61,7 +61,7 @@ module Pangea
             network.vnet = ctx.azurerm_virtual_network(
               :"#{name}_vnet",
               name: "#{name}-vnet",
-              resource_group_name: network.resource_group.name,
+              resource_group_name: network.resource_group.ref(:name),
               location: config.region,
               address_space: [config.network&.vpc_cidr || '10.0.0.0/16'],
               tags: tags
@@ -71,8 +71,8 @@ module Pangea
             subnet = ctx.azurerm_subnet(
               :"#{name}_subnet",
               name: "#{name}-subnet",
-              resource_group_name: network.resource_group.name,
-              virtual_network_name: network.vnet.name,
+              resource_group_name: network.resource_group.ref(:name),
+              virtual_network_name: network.vnet.ref(:name),
               address_prefixes: [config.network&.pod_cidr || '10.0.1.0/24']
             )
             network.add_subnet(:subnet, subnet)
@@ -81,7 +81,7 @@ module Pangea
             network.nsg = ctx.azurerm_network_security_group(
               :"#{name}_nsg",
               name: "#{name}-nsg",
-              resource_group_name: network.resource_group.name,
+              resource_group_name: network.resource_group.ref(:name),
               location: config.region,
               security_rule: azure_nsg_rules(config.distribution),
               tags: tags

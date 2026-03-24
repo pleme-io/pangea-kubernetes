@@ -90,7 +90,7 @@ module Pangea
 
               iam.cluster_policy_attachment = ctx.aws_iam_role_policy_attachment(
                 :"#{name}_cluster_policy",
-                role: iam.cluster_role.name,
+                role: iam.cluster_role.ref(:name),
                 policy_arn: 'arn:aws:iam::aws:policy/AmazonEKSClusterPolicy'
               )
             end
@@ -115,7 +115,7 @@ module Pangea
             %w[AmazonEKSWorkerNodePolicy AmazonEKS_CNI_Policy AmazonEC2ContainerRegistryReadOnly].each do |policy|
               ctx.aws_iam_role_policy_attachment(
                 :"#{name}_node_#{policy.downcase.gsub(/[^a-z0-9]/, '_')}",
-                role: iam.node_role.name,
+                role: iam.node_role.ref(:name),
                 policy_arn: "arn:aws:iam::aws:policy/#{policy}"
               )
             end
@@ -170,7 +170,7 @@ module Pangea
             pool_name = :"#{name}_#{pool_config.name}"
 
             node_group_attrs = {
-              cluster_name: cluster_ref.name,
+              cluster_name: cluster_ref.ref(:name),
               node_group_name: "#{name}-#{pool_config.name}",
               node_role_arn: "${aws_iam_role.#{name}_node_role.arn}",
               instance_types: pool_config.instance_types,
