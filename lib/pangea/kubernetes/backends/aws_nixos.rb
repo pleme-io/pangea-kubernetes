@@ -171,7 +171,7 @@ module Pangea
             etcd_bucket = config.tags[:etcd_backup_bucket] || config.tags['etcd_backup_bucket'] || "#{name}-etcd-backups"
             log_group = "/k3s/#{name}"
 
-            # EC2-only assume-role trust policy
+            # EC2-only assume-role trust policy (Hash — resource.rb handles JSON serialization)
             assume_role_policy = {
               Version: '2012-10-17',
               Statement: [{
@@ -179,7 +179,7 @@ module Pangea
                 Principal: { Service: 'ec2.amazonaws.com' },
                 Action: 'sts:AssumeRole'
               }]
-            }.to_json
+            }
 
             iam[:role] = ctx.aws_iam_role(
               :"#{name}_node_role",
@@ -344,7 +344,7 @@ module Pangea
                   Principal: { Service: 'ec2.amazonaws.com' },
                   Action: 'sts:AssumeRole'
                 }]
-              }.to_json
+              }
 
               iam[:karpenter_role] = ctx.aws_iam_role(
                 :"#{name}_karpenter_role",
