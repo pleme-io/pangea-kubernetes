@@ -190,6 +190,13 @@ Two-tier architecture for production:
 
 Bare metal mode adds BGP/VRRP (HAProxy + BIRD) with virtual IPs.
 
+## VPN Validation
+
+`ClusterConfig` includes optional VPN configuration via `Types::VpnConfig`. The
+VPN config is validated before `ClusterConfig` coercion -- if a VPN hash is present
+but malformed, a clear error is raised rather than a cryptic Dry::Struct failure.
+VPN-enabled clusters synthesize an additional NLB listener for WireGuard UDP traffic.
+
 ## Dependencies
 
 - pangea-core ~> 0.2
