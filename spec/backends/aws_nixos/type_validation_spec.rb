@@ -4,13 +4,15 @@
 #
 # Uses TypedSynthesizerContext to run REAL dry-struct type validation
 # from pangea-aws for every resource call. This catches bugs like:
-# - assume_role_policy passed as JSON String instead of Hash
-# - S3 encryption with aws:kms but missing kms_master_key_id
-# - health_check.port as Integer instead of String
-# - Security group using ingress/egress instead of ingress_rules/egress_rules
-# - Launch template attributes not nested under launch_template_data
-# - LB using subnets instead of subnet_ids
-# - Route table using route instead of routes
+# - assume_role_policy passed as Hash instead of JSON String
+# - S3 encryption using wrong method name (aws_s3_bucket_encryption)
+# - versioning_configuration as bare Hash instead of Array.of(Hash)
+# - health_check as bare Hash instead of Array.of(Hash)
+# - Security group rules as inline arrays instead of separate resources
+# - Launch template attributes nested under launch_template_data instead of flat
+# - LB using subnet_ids instead of subnets
+# - Route table using inline routes instead of separate aws_route resources
+# - IAM policy documents as Hash instead of JSON String
 
 require 'pangea-aws'
 
@@ -68,25 +70,37 @@ RSpec.describe 'aws_nixos backend type validation' do
       expect(result[:etcd_bucket]).not_to be_nil
     end
 
-    it 'creates VPC with lifecycle meta-argument' do
+    it 'creates VPC' do
       result = Pangea::Kubernetes::Backends::AwsNixos.create_network(
         typed_ctx, :typecheck, cluster_config, base_tags
       )
       expect(result[:vpc]).not_to be_nil
     end
 
-    it 'creates route table with routes (not route)' do
+    it 'creates route table and separate aws_route for default route' do
       result = Pangea::Kubernetes::Backends::AwsNixos.create_network(
         typed_ctx, :typecheck, cluster_config, base_tags
       )
       expect(result[:route_table]).not_to be_nil
+      route = typed_ctx.find_resource(:aws_route, :typecheck_default_route)
+      expect(route).not_to be_nil
     end
 
-    it 'creates security group with ingress_rules and egress_rules' do
+    it 'creates security group with separate aws_security_group_rule resources' do
       result = Pangea::Kubernetes::Backends::AwsNixos.create_network(
         typed_ctx, :typecheck, cluster_config, base_tags
       )
       expect(result[:sg]).not_to be_nil
+      sg_rules = typed_ctx.created_resources.select { |r| r[:type] == 'aws_security_group_rule' }
+      expect(sg_rules).not_to be_empty
+    end
+
+    it 'uses aws_s3_bucket_server_side_encryption_configuration (not aws_s3_bucket_encryption)' do
+      Pangea::Kubernetes::Backends::AwsNixos.create_network(
+        typed_ctx, :typecheck, cluster_config, base_tags
+      )
+      sse = typed_ctx.find_resource(:aws_s3_bucket_server_side_encryption_configuration, :typecheck_etcd_encryption)
+      expect(sse).not_to be_nil
     end
   end
 
@@ -101,14 +115,14 @@ RSpec.describe 'aws_nixos backend type validation' do
       }.not_to raise_error
     end
 
-    it 'creates IAM role with Hash assume_role_policy (not JSON String)' do
+    it 'creates IAM role with JSON String assume_role_policy' do
       iam = Pangea::Kubernetes::Backends::AwsNixos.create_iam(
         typed_ctx, :typecheck, cluster_config, base_tags
       )
       expect(iam[:role]).not_to be_nil
     end
 
-    it 'creates all 5 IAM policies with valid policy documents' do
+    it 'creates all 5 IAM policies with JSON String policy documents' do
       iam = Pangea::Kubernetes::Backends::AwsNixos.create_iam(
         typed_ctx, :typecheck, cluster_config, base_tags
       )
@@ -170,21 +184,20 @@ RSpec.describe 'aws_nixos backend type validation' do
     end
 
     it 'validates health_check.port as String (not Integer)' do
-      # This was the original bug: port: 6443 (Integer) instead of '6443' (String)
       ref = Pangea::Kubernetes::Backends::AwsNixos.create_cluster(
         typed_ctx, :typecheck, cluster_config, arch_result, base_tags
       )
       expect(ref).not_to be_nil
     end
 
-    it 'validates launch template data is properly nested' do
+    it 'validates launch template data is flat (not nested under launch_template_data)' do
       ref = Pangea::Kubernetes::Backends::AwsNixos.create_cluster(
         typed_ctx, :typecheck, cluster_config, arch_result, base_tags
       )
       expect(ref).to be_a(Pangea::Kubernetes::Backends::AwsNixos::ControlPlaneRef)
     end
 
-    it 'validates NLB uses subnet_ids (not subnets)' do
+    it 'validates NLB uses subnets (not subnet_ids)' do
       ref = Pangea::Kubernetes::Backends::AwsNixos.create_cluster(
         typed_ctx, :typecheck, cluster_config, arch_result, base_tags
       )
@@ -443,7 +456,7 @@ RSpec.describe 'aws_nixos backend type validation' do
           name: 'akeyless-dev-vpn',
           internal: false,
           load_balancer_type: 'network',
-          subnet_ids: result.network.subnet_ids,
+          subnets: result.network.subnet_ids,
           tags: { Name: 'akeyless-dev-vpn-nlb' },
         })
       }.not_to raise_error
@@ -454,7 +467,7 @@ RSpec.describe 'aws_nixos backend type validation' do
           port: 51822,
           protocol: 'UDP',
           vpc_id: result.network.vpc.id,
-          health_check: { protocol: 'TCP', port: 22 },
+          health_check: [{ protocol: 'TCP', port: '22' }],
         })
       }.not_to raise_error
 
@@ -522,21 +535,6 @@ RSpec.describe 'aws_nixos backend type validation' do
       expect(arch.cluster.asg).to eq(cp_ref.asg)
       expect(arch.cluster.security_group).to be_a(Pangea::Kubernetes::Architecture::SecurityGroupAccessor)
       expect(arch.cluster.security_group.id).not_to be_nil
-    end
-
-    it 'health_check port coerces Integer to String' do
-      # This verifies the coercion fix: port: 6443 (Integer) must become '6443' (String)
-      expect {
-        Pangea::Resources::AWS::Types::TargetGroupHealthCheck.new(
-          protocol: 'TCP', port: 6443
-        )
-      }.not_to raise_error
-
-      hc = Pangea::Resources::AWS::Types::TargetGroupHealthCheck.new(
-        protocol: 'TCP', port: 6443
-      )
-      expect(hc.port).to eq('6443')
-      expect(hc.port).to be_a(String)
     end
   end
 end

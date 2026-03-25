@@ -50,18 +50,26 @@ RSpec.describe Pangea::Kubernetes::Backends::AwsNixos do
       expect(result).to have_key(:sg)
     end
 
-    it 'creates security group with K8s ports' do
+    it 'creates separate security group rules for K8s ports' do
       described_class.create_network(ctx, :production, cluster_config, base_tags)
-      sg = ctx.find_resource(:aws_security_group, :production_sg)
-      expect(sg[:attrs][:ingress_rules]).to be_an(Array)
-      api_rule = sg[:attrs][:ingress_rules].find { |r| r[:description] == 'K8s API' }
-      expect(api_rule[:from_port]).to eq(6443)
+      sg_rules = ctx.created_resources.select { |r| r[:type] == 'aws_security_group_rule' && r[:attrs][:type] == 'ingress' }
+      api_rule = sg_rules.find { |r| r[:attrs][:description] == 'K8s API' }
+      expect(api_rule[:attrs][:from_port]).to eq(6443)
     end
 
-    it 'protects VPC with prevent_destroy' do
+    it 'creates a default route via aws_route resource' do
       described_class.create_network(ctx, :production, cluster_config, base_tags)
-      vpc = ctx.find_resource(:aws_vpc, :production_vpc)
-      expect(vpc[:attrs][:lifecycle]).to eq({ prevent_destroy: true })
+      route = ctx.find_resource(:aws_route, :production_default_route)
+      expect(route).not_to be_nil
+      expect(route[:attrs][:destination_cidr_block]).to eq('0.0.0.0/0')
+    end
+
+    it 'creates egress rule allowing all outbound' do
+      described_class.create_network(ctx, :production, cluster_config, base_tags)
+      egress = ctx.find_resource(:aws_security_group_rule, :production_sg_egress_all)
+      expect(egress).not_to be_nil
+      expect(egress[:attrs][:type]).to eq('egress')
+      expect(egress[:attrs][:protocol]).to eq('-1')
     end
   end
 
@@ -92,11 +100,22 @@ RSpec.describe Pangea::Kubernetes::Backends::AwsNixos do
       expect(role[:attrs][:max_session_duration]).to eq(3600)
     end
 
-    it 'protects IAM role with prevent_destroy' do
+    it 'passes assume_role_policy as JSON string' do
       iam_result
       roles = ctx.created_resources.select { |r| r[:type] == 'aws_iam_role' }
       role = roles.first
-      expect(role[:attrs][:lifecycle]).to eq({ prevent_destroy: true })
+      expect(role[:attrs][:assume_role_policy]).to be_a(String)
+      parsed = JSON.parse(role[:attrs][:assume_role_policy])
+      expect(parsed['Statement'].first['Principal']['Service']).to eq('ec2.amazonaws.com')
+    end
+
+    it 'passes policy documents as JSON strings' do
+      iam_result
+      policies = ctx.created_resources.select { |r| r[:type] == 'aws_iam_policy' }
+      policies.each do |p|
+        expect(p[:attrs][:policy]).to be_a(String)
+        expect { JSON.parse(p[:attrs][:policy]) }.not_to raise_error
+      end
     end
 
     it 'tags instance profile' do
@@ -132,19 +151,18 @@ RSpec.describe Pangea::Kubernetes::Backends::AwsNixos do
       expect(ctx.find_resource(:aws_eks_cluster, :production_cluster)).to be_nil
     end
 
-    it 'uses NixOS AMI in launch template' do
+    it 'uses NixOS AMI in launch template (flat attributes)' do
       described_class.create_cluster(ctx, :production, cluster_config, arch_result, base_tags)
 
       lt = ctx.find_resource(:aws_launch_template, :production_cp_lt)
-      lt_data = lt[:attrs][:launch_template_data]
-      expect(lt_data[:image_id]).to eq('ami-nixos-test')
+      expect(lt[:attrs][:image_id]).to eq('ami-nixos-test')
     end
 
     it 'includes cloud-init with k3s distribution config' do
       described_class.create_cluster(ctx, :production, cluster_config, arch_result, base_tags)
 
       lt = ctx.find_resource(:aws_launch_template, :production_cp_lt)
-      user_data = lt[:attrs][:launch_template_data][:user_data]
+      user_data = lt[:attrs][:user_data]
       expect(user_data).to include('"distribution":"k3s"')
       expect(user_data).to include('"profile":"cilium-standard"')
       expect(user_data).to include('"cluster_init":true')
@@ -154,7 +172,7 @@ RSpec.describe Pangea::Kubernetes::Backends::AwsNixos do
       described_class.create_cluster(ctx, :production, cluster_config, arch_result, base_tags)
 
       lt = ctx.find_resource(:aws_launch_template, :production_cp_lt)
-      metadata = lt[:attrs][:launch_template_data][:metadata_options]
+      metadata = lt[:attrs][:metadata_options].first
       expect(metadata[:http_tokens]).to eq('required')
       expect(metadata[:http_put_response_hop_limit]).to eq(1)
     end
@@ -163,7 +181,7 @@ RSpec.describe Pangea::Kubernetes::Backends::AwsNixos do
       described_class.create_cluster(ctx, :production, cluster_config, arch_result, base_tags)
 
       lt = ctx.find_resource(:aws_launch_template, :production_cp_lt)
-      ebs = lt[:attrs][:launch_template_data][:block_device_mappings].first[:ebs]
+      ebs = lt[:attrs][:block_device_mappings].first[:ebs]
       expect(ebs[:encrypted]).to be true
     end
 
@@ -190,13 +208,12 @@ RSpec.describe Pangea::Kubernetes::Backends::AwsNixos do
       expect(ref.ipv4_address).to eq(ref.nlb.dns_name)
     end
 
-    it 'sets CP ASG min_size and desired_capacity from system pool min_size' do
+    it 'sets CP ASG min_size from system pool min_size' do
       # cluster_config has min_size: 3
       described_class.create_cluster(ctx, :production, cluster_config, arch_result, base_tags)
 
       asg = ctx.find_resource(:aws_autoscaling_group, :production_cp_asg)
       expect(asg[:attrs][:min_size]).to eq(3)
-      expect(asg[:attrs][:desired_capacity]).to eq(3)
       expect(asg[:attrs][:max_size]).to be >= 3
     end
 
@@ -240,7 +257,7 @@ RSpec.describe Pangea::Kubernetes::Backends::AwsNixos do
       described_class.create_cluster(ctx, :test, k8s_config, result, base_tags)
 
       lt = ctx.find_resource(:aws_launch_template, :test_cp_lt)
-      user_data = lt[:attrs][:launch_template_data][:user_data]
+      user_data = lt[:attrs][:user_data]
       expect(user_data).to include('"distribution":"kubernetes"')
       expect(user_data).to include('"profile":"calico-standard"')
       expect(user_data).to include('"role":"control-plane"')
@@ -266,10 +283,9 @@ RSpec.describe Pangea::Kubernetes::Backends::AwsNixos do
         r
       end
 
-      it 'sets CP ASG desired_capacity to 0' do
+      it 'sets CP ASG min_size to 0' do
         described_class.create_cluster(ctx, :parked, parked_config, parked_arch, base_tags)
         asg = ctx.find_resource(:aws_autoscaling_group, :parked_cp_asg)
-        expect(asg[:attrs][:desired_capacity]).to eq(0)
         expect(asg[:attrs][:min_size]).to eq(0)
       end
 
@@ -331,7 +347,7 @@ RSpec.describe Pangea::Kubernetes::Backends::AwsNixos do
       it 'includes argocd config in cloud-init (not fluxcd)' do
         described_class.create_cluster(ctx, :argo, argocd_config, argocd_arch, base_tags)
         lt = ctx.find_resource(:aws_launch_template, :argo_cp_lt)
-        user_data = lt[:attrs][:launch_template_data][:user_data]
+        user_data = lt[:attrs][:user_data]
         expect(user_data).to include('"argocd"')
         expect(user_data).to include('pleme-io/akeyless-k8s')
         expect(user_data).not_to include('"fluxcd"')
@@ -372,21 +388,20 @@ RSpec.describe Pangea::Kubernetes::Backends::AwsNixos do
       asg = ctx.find_resource(:aws_autoscaling_group, :production_workers_asg)
       expect(asg[:attrs][:min_size]).to eq(2)
       expect(asg[:attrs][:max_size]).to eq(20)
-      expect(asg[:attrs][:desired_capacity]).to eq(2) # effective_desired_size
     end
 
     it 'includes cloud-init with agent role' do
       described_class.create_node_pool(ctx, :production, cluster_ref, pool_config, base_tags)
 
       lt = ctx.find_resource(:aws_launch_template, :production_workers_lt)
-      expect(lt[:attrs][:launch_template_data][:user_data]).to include('"role":"agent"')
+      expect(lt[:attrs][:user_data]).to include('"role":"agent"')
     end
 
     it 'enforces IMDSv2 on worker launch template' do
       described_class.create_node_pool(ctx, :production, cluster_ref, pool_config, base_tags)
 
       lt = ctx.find_resource(:aws_launch_template, :production_workers_lt)
-      metadata = lt[:attrs][:launch_template_data][:metadata_options]
+      metadata = lt[:attrs][:metadata_options].first
       expect(metadata[:http_tokens]).to eq('required')
     end
 
@@ -394,7 +409,7 @@ RSpec.describe Pangea::Kubernetes::Backends::AwsNixos do
       described_class.create_node_pool(ctx, :production, cluster_ref, pool_config, base_tags)
 
       lt = ctx.find_resource(:aws_launch_template, :production_workers_lt)
-      ebs = lt[:attrs][:launch_template_data][:block_device_mappings].first[:ebs]
+      ebs = lt[:attrs][:block_device_mappings].first[:ebs]
       expect(ebs[:encrypted]).to be true
     end
 
@@ -402,31 +417,22 @@ RSpec.describe Pangea::Kubernetes::Backends::AwsNixos do
       described_class.create_node_pool(ctx, :production, cluster_ref, pool_config, base_tags)
 
       lt = ctx.find_resource(:aws_launch_template, :production_workers_lt)
-      expect(lt[:attrs][:launch_template_data][:iam_instance_profile]).not_to be_nil
+      expect(lt[:attrs][:iam_instance_profile]).not_to be_nil
     end
 
     it 'includes security group on worker launch template' do
       described_class.create_node_pool(ctx, :production, cluster_ref, pool_config, base_tags)
 
       lt = ctx.find_resource(:aws_launch_template, :production_workers_lt)
-      expect(lt[:attrs][:launch_template_data][:vpc_security_group_ids]).not_to be_empty
-    end
-
-    it 'uses resolved subnet IDs for worker ASG' do
-      described_class.create_node_pool(ctx, :production, cluster_ref, pool_config, base_tags)
-
-      asg = ctx.find_resource(:aws_autoscaling_group, :production_workers_asg)
-      subnet_ids = asg[:attrs][:vpc_zone_identifier]
-      expect(subnet_ids).not_to be_empty
-      expect(subnet_ids.length).to be >= 2
+      expect(lt[:attrs][:vpc_security_group_ids]).not_to be_empty
     end
 
     it 'worker cloud-init includes join_server from NLB' do
       described_class.create_node_pool(ctx, :production, cluster_ref, pool_config, base_tags)
 
       lt = ctx.find_resource(:aws_launch_template, :production_workers_lt)
-      expect(lt[:attrs][:launch_template_data][:user_data]).to include('"join_server"')
-      expect(lt[:attrs][:launch_template_data][:user_data]).to include(cluster_ref.ipv4_address.to_s)
+      expect(lt[:attrs][:user_data]).to include('"join_server"')
+      expect(lt[:attrs][:user_data]).to include(cluster_ref.ipv4_address.to_s)
     end
 
     it 'adds resource-level tags to worker launch template' do

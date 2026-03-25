@@ -41,6 +41,11 @@ RSpec.describe 'AwsNixos security hardening' do
   let(:network) { Pangea::Kubernetes::Backends::AwsNixos.create_network(ctx, :kazoku, config, base_tags) }
   let(:iam) { Pangea::Kubernetes::Backends::AwsNixos.create_iam(ctx, :kazoku, config, base_tags) }
 
+  # Helper to find ingress security group rules
+  def ingress_rules
+    ctx.created_resources.select { |r| r[:type] == 'aws_security_group_rule' && r[:attrs][:type] == 'ingress' }
+  end
+
   # ── Input Validation ─────────────────────────────────────────────
 
   describe 'input validation' do
@@ -110,9 +115,8 @@ RSpec.describe 'AwsNixos security hardening' do
 
     it 'ECR policy has no wildcard actions' do
       ecr = ctx.find_resource(:aws_iam_policy, :kazoku_ecr_read)
-      policy = ecr[:attrs][:policy]
-      statements = policy[:Statement] || policy['Statement']
-      all_actions = statements.flat_map { |s| Array(s[:Action] || s['Action']) }
+      policy = JSON.parse(ecr[:attrs][:policy])
+      all_actions = policy['Statement'].flat_map { |s| Array(s['Action']) }
 
       expect(all_actions).not_to include('ecr:*')
       expect(all_actions).not_to include('*')
@@ -123,10 +127,9 @@ RSpec.describe 'AwsNixos security hardening' do
 
     it 'ECR policy scoped to specific account (no wildcard resources)' do
       ecr = ctx.find_resource(:aws_iam_policy, :kazoku_ecr_read)
-      policy = ecr[:attrs][:policy]
-      statements = policy[:Statement] || policy['Statement']
-      ecr_read_stmt = statements.find { |s| s[:Sid] == 'ECRReadOnly' }
-      resources = Array(ecr_read_stmt[:Resource])
+      policy = JSON.parse(ecr[:attrs][:policy])
+      ecr_read_stmt = policy['Statement'].find { |s| s['Sid'] == 'ECRReadOnly' }
+      resources = Array(ecr_read_stmt['Resource'])
 
       resources.each do |r|
         expect(r).to include('123456789012'), "ECR resource must be account-scoped, got: #{r}"
@@ -135,9 +138,8 @@ RSpec.describe 'AwsNixos security hardening' do
 
     it 'CloudWatch policy scoped to specific account (no wildcard resources)' do
       logs = ctx.find_resource(:aws_iam_policy, :kazoku_logs)
-      policy = logs[:attrs][:policy]
-      statements = policy[:Statement] || policy['Statement']
-      resources = statements.flat_map { |s| Array(s[:Resource]) }
+      policy = JSON.parse(logs[:attrs][:policy])
+      resources = policy['Statement'].flat_map { |s| Array(s['Resource']) }
 
       resources.each do |r|
         expect(r).to include('123456789012'), "CloudWatch resource must be account-scoped, got: #{r}"
@@ -146,9 +148,8 @@ RSpec.describe 'AwsNixos security hardening' do
 
     it 'S3 policy scoped to specific etcd bucket' do
       s3 = ctx.find_resource(:aws_iam_policy, :kazoku_etcd_backup)
-      policy = s3[:attrs][:policy]
-      statements = policy[:Statement] || policy['Statement']
-      resources = statements.flat_map { |s| Array(s[:Resource] || s['Resource']) }
+      policy = JSON.parse(s3[:attrs][:policy])
+      resources = policy['Statement'].flat_map { |s| Array(s['Resource']) }
 
       expect(resources).to all(include('kazoku-etcd-backups'))
       expect(resources).not_to include('*')
@@ -156,9 +157,8 @@ RSpec.describe 'AwsNixos security hardening' do
 
     it 'S3 policy has no dangerous actions' do
       s3 = ctx.find_resource(:aws_iam_policy, :kazoku_etcd_backup)
-      policy = s3[:attrs][:policy]
-      statements = policy[:Statement] || policy['Statement']
-      all_actions = statements.flat_map { |s| Array(s[:Action] || s['Action']) }
+      policy = JSON.parse(s3[:attrs][:policy])
+      all_actions = policy['Statement'].flat_map { |s| Array(s['Action']) }
 
       %w[s3:DeleteObject s3:DeleteBucket s3:PutBucketPolicy s3:*].each do |dangerous|
         expect(all_actions).not_to include(dangerous), "S3 policy must not include #{dangerous}"
@@ -167,32 +167,29 @@ RSpec.describe 'AwsNixos security hardening' do
 
     it 'CloudWatch logs policy scoped to specific log group' do
       logs = ctx.find_resource(:aws_iam_policy, :kazoku_logs)
-      policy = logs[:attrs][:policy]
-      statements = policy[:Statement] || policy['Statement']
-      resources = statements.flat_map { |s| Array(s[:Resource] || s['Resource']) }
+      policy = JSON.parse(logs[:attrs][:policy])
+      resources = policy['Statement'].flat_map { |s| Array(s['Resource']) }
 
       expect(resources).to all(include('/k3s/kazoku'))
     end
 
     it 'EC2 policy is describe-only with region condition' do
       ec2 = ctx.find_resource(:aws_iam_policy, :kazoku_ec2_describe)
-      policy = ec2[:attrs][:policy]
-      statements = policy[:Statement] || policy['Statement']
-      all_actions = statements.flat_map { |s| Array(s[:Action] || s['Action']) }
+      policy = JSON.parse(ec2[:attrs][:policy])
+      all_actions = policy['Statement'].flat_map { |s| Array(s['Action']) }
 
       all_actions.each do |action|
         expect(action).to start_with('ec2:Describe'), "EC2 policy must be describe-only, found: #{action}"
       end
 
-      conditions = statements.map { |s| s[:Condition] || s['Condition'] }.compact
+      conditions = policy['Statement'].map { |s| s['Condition'] }.compact
       expect(conditions).not_to be_empty, 'EC2 policy must have region condition'
     end
 
     it 'SSM policy has no RunCommand actions' do
       ssm = ctx.find_resource(:aws_iam_policy, :kazoku_ssm)
-      policy = ssm[:attrs][:policy]
-      statements = policy[:Statement] || policy['Statement']
-      all_actions = statements.flat_map { |s| Array(s[:Action] || s['Action']) }
+      policy = JSON.parse(ssm[:attrs][:policy])
+      all_actions = policy['Statement'].flat_map { |s| Array(s['Action']) }
 
       %w[ssm:SendCommand ssm:CreateDocument ssm:DeleteDocument ssm:*].each do |dangerous|
         expect(all_actions).not_to include(dangerous), "SSM policy must not include #{dangerous}"
@@ -204,9 +201,11 @@ RSpec.describe 'AwsNixos security hardening' do
       expect(role[:attrs][:max_session_duration]).to eq(3600)
     end
 
-    it 'IAM role has prevent_destroy lifecycle' do
+    it 'IAM role assume_role_policy is a JSON string' do
       role = ctx.find_resource(:aws_iam_role, :kazoku_node_role)
-      expect(role[:attrs][:lifecycle]).to eq({ prevent_destroy: true })
+      expect(role[:attrs][:assume_role_policy]).to be_a(String)
+      parsed = JSON.parse(role[:attrs][:assume_role_policy])
+      expect(parsed['Statement'].first['Principal']['Service']).to eq('ec2.amazonaws.com')
     end
   end
 
@@ -216,50 +215,42 @@ RSpec.describe 'AwsNixos security hardening' do
     before { network }
 
     it 'SSH is NOT open to 0.0.0.0/0' do
-      sg = ctx.find_resource(:aws_security_group, :kazoku_sg)
-      ssh_rule = sg[:attrs][:ingress_rules].find { |r| r[:description] == 'SSH' }
-      expect(ssh_rule[:cidr_blocks]).not_to include('0.0.0.0/0')
+      ssh_rule = ingress_rules.find { |r| r[:attrs][:description] == 'SSH' }
+      expect(ssh_rule[:attrs][:cidr_blocks]).not_to include('0.0.0.0/0')
     end
 
     it 'K8s API is NOT open to 0.0.0.0/0' do
-      sg = ctx.find_resource(:aws_security_group, :kazoku_sg)
-      api_rule = sg[:attrs][:ingress_rules].find { |r| r[:description] == 'K8s API' }
-      expect(api_rule[:cidr_blocks]).not_to include('0.0.0.0/0')
+      api_rule = ingress_rules.find { |r| r[:attrs][:description] == 'K8s API' }
+      expect(api_rule[:attrs][:cidr_blocks]).not_to include('0.0.0.0/0')
     end
 
     it 'etcd is restricted to VPC CIDR' do
-      sg = ctx.find_resource(:aws_security_group, :kazoku_sg)
-      etcd_rule = sg[:attrs][:ingress_rules].find { |r| r[:description] == 'etcd' }
-      expect(etcd_rule[:cidr_blocks]).to eq(['10.0.0.0/16'])
+      etcd_rule = ingress_rules.find { |r| r[:attrs][:description] == 'etcd' }
+      expect(etcd_rule[:attrs][:cidr_blocks]).to eq(['10.0.0.0/16'])
     end
 
     it 'kubelet is restricted to VPC CIDR' do
-      sg = ctx.find_resource(:aws_security_group, :kazoku_sg)
-      kubelet_rule = sg[:attrs][:ingress_rules].find { |r| r[:description] == 'Kubelet' }
-      expect(kubelet_rule[:cidr_blocks]).to eq(['10.0.0.0/16'])
+      kubelet_rule = ingress_rules.find { |r| r[:attrs][:description] == 'Kubelet' }
+      expect(kubelet_rule[:attrs][:cidr_blocks]).to eq(['10.0.0.0/16'])
     end
 
     it 'VXLAN is restricted to VPC CIDR' do
-      sg = ctx.find_resource(:aws_security_group, :kazoku_sg)
-      vxlan_rule = sg[:attrs][:ingress_rules].find { |r| r[:description] == 'VXLAN' }
-      expect(vxlan_rule[:cidr_blocks]).to eq(['10.0.0.0/16'])
+      vxlan_rule = ingress_rules.find { |r| r[:attrs][:description] == 'VXLAN' }
+      expect(vxlan_rule[:attrs][:cidr_blocks]).to eq(['10.0.0.0/16'])
     end
 
     it 'only HTTP and HTTPS are public' do
-      sg = ctx.find_resource(:aws_security_group, :kazoku_sg)
-      public_rules = sg[:attrs][:ingress_rules].select { |r| r[:cidr_blocks].include?('0.0.0.0/0') }
-      public_descriptions = public_rules.map { |r| r[:description] }
+      public_rules = ingress_rules.select { |r| r[:attrs][:cidr_blocks].include?('0.0.0.0/0') }
+      public_descriptions = public_rules.map { |r| r[:attrs][:description] }
       expect(public_descriptions).to contain_exactly('HTTP', 'HTTPS')
     end
 
-    it 'VPC has prevent_destroy lifecycle' do
-      vpc = ctx.find_resource(:aws_vpc, :kazoku_vpc)
-      expect(vpc[:attrs][:lifecycle]).to eq({ prevent_destroy: true })
-    end
-
-    it 'creates route table with IGW route' do
+    it 'creates route table with separate default route' do
       rt = ctx.find_resource(:aws_route_table, :kazoku_rt)
       expect(rt).not_to be_nil
+      route = ctx.find_resource(:aws_route, :kazoku_default_route)
+      expect(route).not_to be_nil
+      expect(route[:attrs][:destination_cidr_block]).to eq('0.0.0.0/0')
     end
 
     it 'associates subnets with route table' do
@@ -282,11 +273,11 @@ RSpec.describe 'AwsNixos security hardening' do
     it 'enables versioning on etcd bucket' do
       versioning = ctx.find_resource(:aws_s3_bucket_versioning, :kazoku_etcd_versioning)
       expect(versioning).not_to be_nil
-      expect(versioning[:attrs][:versioning_configuration][:status]).to eq('Enabled')
+      expect(versioning[:attrs][:versioning_configuration]).to eq([{ status: 'Enabled' }])
     end
 
-    it 'enables KMS encryption on etcd bucket' do
-      encryption = ctx.find_resource(:aws_s3_bucket_encryption, :kazoku_etcd_encryption)
+    it 'enables server-side encryption on etcd bucket' do
+      encryption = ctx.find_resource(:aws_s3_bucket_server_side_encryption_configuration, :kazoku_etcd_encryption)
       expect(encryption).not_to be_nil
     end
 
@@ -321,23 +312,23 @@ RSpec.describe 'AwsNixos security hardening' do
 
     it 'requires IMDSv2 (http_tokens: required) on launch template' do
       lt = ctx.find_resource(:aws_launch_template, :kazoku_cp_lt)
-      expect(lt[:attrs][:launch_template_data][:metadata_options][:http_tokens]).to eq('required')
+      expect(lt[:attrs][:metadata_options].first[:http_tokens]).to eq('required')
     end
 
     it 'limits IMDS hop count to 1 on launch template' do
       lt = ctx.find_resource(:aws_launch_template, :kazoku_cp_lt)
-      expect(lt[:attrs][:launch_template_data][:metadata_options][:http_put_response_hop_limit]).to eq(1)
+      expect(lt[:attrs][:metadata_options].first[:http_put_response_hop_limit]).to eq(1)
     end
 
     it 'encrypts volumes via launch template' do
       lt = ctx.find_resource(:aws_launch_template, :kazoku_cp_lt)
-      ebs = lt[:attrs][:launch_template_data][:block_device_mappings].first[:ebs]
+      ebs = lt[:attrs][:block_device_mappings].first[:ebs]
       expect(ebs[:encrypted]).to be(true)
     end
 
     it 'uses gp3 volume type via launch template' do
       lt = ctx.find_resource(:aws_launch_template, :kazoku_cp_lt)
-      ebs = lt[:attrs][:launch_template_data][:block_device_mappings].first[:ebs]
+      ebs = lt[:attrs][:block_device_mappings].first[:ebs]
       expect(ebs[:volume_type]).to eq('gp3')
     end
 
@@ -356,11 +347,6 @@ RSpec.describe 'AwsNixos security hardening' do
       log_group = ctx.find_resource(:aws_cloudwatch_log_group, :kazoku_logs)
       expect(log_group).not_to be_nil
       expect(log_group[:attrs][:retention_in_days]).to eq(30)
-    end
-
-    it 'log group name follows /k3s/{cluster} convention' do
-      log_group = ctx.find_resource(:aws_cloudwatch_log_group, :kazoku_logs)
-      expect(log_group[:attrs][:name]).to eq('/k3s/kazoku')
     end
   end
 

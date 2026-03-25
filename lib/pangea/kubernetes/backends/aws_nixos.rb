@@ -14,6 +14,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+require 'json'
 require 'pangea/kubernetes/backends/base'
 require 'pangea/kubernetes/backends/nixos_base'
 
@@ -82,14 +83,12 @@ module Pangea
             ctx.aws_s3_bucket_versioning(
               :"#{name}_etcd_versioning",
               bucket: network.etcd_bucket.id,
-              versioning_configuration: { status: 'Enabled' }
+              versioning_configuration: [{ status: 'Enabled' }]
             )
-            ctx.aws_s3_bucket_encryption(
+            ctx.aws_s3_bucket_server_side_encryption_configuration(
               :"#{name}_etcd_encryption",
               bucket: network.etcd_bucket.id,
-              server_side_encryption_configuration: {
-                rule: [{ apply_server_side_encryption_by_default: { sse_algorithm: 'AES256' } }],
-              }
+              rule: [{ apply_server_side_encryption_by_default: { sse_algorithm: 'AES256' } }]
             )
             ctx.aws_s3_bucket_public_access_block(
               :"#{name}_etcd_public_access",
@@ -120,8 +119,15 @@ module Pangea
             network.route_table = ctx.aws_route_table(
               :"#{name}_rt",
               vpc_id: network.vpc.id,
-              routes: [{ cidr_block: '0.0.0.0/0', gateway_id: network.igw.id }],
               tags: tags.merge(Name: "#{name}-rt")
+            )
+
+            # Default route to IGW (separate aws_route resource per Terraform schema)
+            ctx.aws_route(
+              :"#{name}_default_route",
+              route_table_id: network.route_table.id,
+              destination_cidr_block: '0.0.0.0/0',
+              gateway_id: network.igw.id
             )
 
             # Subnets in 2 AZs
@@ -147,12 +153,34 @@ module Pangea
             # Security group — K3s ports restricted to VPC CIDR
             network.sg = ctx.aws_security_group(
               :"#{name}_sg",
-              name: "#{name}-k8s-nodes",
               description: "Security group for #{name} k8s/k3s NixOS nodes",
-              vpc_id: network.vpc.id,
-              ingress_rules: aws_security_group_rules(config, vpc_cidr),
-              egress_rules: [{ from_port: 0, to_port: 0, protocol: '-1', cidr_blocks: ['0.0.0.0/0'] }],
               tags: tags.merge(Name: "#{name}-sg")
+            )
+
+            # Ingress rules as separate aws_security_group_rule resources
+            aws_security_group_rules(config, vpc_cidr).each_with_index do |rule, idx|
+              rule_suffix = rule[:description]&.downcase&.gsub(/[^a-z0-9]+/, '_')&.gsub(/_+$/, '') || "rule_#{idx}"
+              ctx.aws_security_group_rule(
+                :"#{name}_sg_ingress_#{rule_suffix}",
+                type: 'ingress',
+                security_group_id: network.sg.id,
+                from_port: rule[:from_port],
+                to_port: rule[:to_port],
+                protocol: rule[:protocol],
+                cidr_blocks: rule[:cidr_blocks],
+                description: rule[:description]
+              )
+            end
+
+            # Egress rule — allow all outbound
+            ctx.aws_security_group_rule(
+              :"#{name}_sg_egress_all",
+              type: 'egress',
+              security_group_id: network.sg.id,
+              from_port: 0,
+              to_port: 0,
+              protocol: '-1',
+              cidr_blocks: ['0.0.0.0/0']
             )
 
             network
@@ -171,29 +199,26 @@ module Pangea
             etcd_bucket = config.tags[:etcd_backup_bucket] || config.tags['etcd_backup_bucket'] || "#{name}-etcd-backups"
             log_group = "/k3s/#{name}"
 
-            # EC2-only assume-role trust policy (Hash — resource.rb handles JSON serialization)
-            assume_role_policy = {
+            # EC2-only assume-role trust policy (JSON String per Terraform schema)
+            assume_role_policy = JSON.generate({
               Version: '2012-10-17',
               Statement: [{
                 Effect: 'Allow',
                 Principal: { Service: 'ec2.amazonaws.com' },
                 Action: 'sts:AssumeRole'
               }]
-            }
+            })
 
             iam.role = ctx.aws_iam_role(
               :"#{name}_node_role",
-              name: "#{name}-node-role",
               description: "Least-privilege role for #{name} K3s cluster nodes",
               assume_role_policy: assume_role_policy,
               max_session_duration: 3600,
-              tags: tags.merge(Name: "#{name}-node-role"),
-              lifecycle: { prevent_destroy: true }
+              tags: tags.merge(Name: "#{name}-node-role")
             )
 
             iam.instance_profile = ctx.aws_iam_instance_profile(
               :"#{name}_node_profile",
-              name: "#{name}-node-profile",
               role: iam.role.ref(:name),
               tags: tags.merge(Name: "#{name}-node-profile")
             )
@@ -203,9 +228,8 @@ module Pangea
 
             iam.ecr_policy = ctx.aws_iam_policy(
               :"#{name}_ecr_read",
-              name: "#{name}-ecr-read",
               description: "ECR read-only for #{name} K3s nodes",
-              policy: {
+              policy: JSON.generate({
                 Version: '2012-10-17',
                 Statement: [{
                   Sid: 'ECRReadOnly',
@@ -224,7 +248,7 @@ module Pangea
                   Action: ['ecr:GetAuthorizationToken'],
                   Resource: ['*'],
                 }],
-              },
+              }),
               tags: tags,
             )
             ctx.aws_iam_role_policy_attachment(:"#{name}_ecr_read",
@@ -233,9 +257,8 @@ module Pangea
             # ── Policy: S3 Etcd Backup ───────────────────────────────
             iam.etcd_policy = ctx.aws_iam_policy(
               :"#{name}_etcd_backup",
-              name: "#{name}-etcd-backup",
               description: "S3 etcd backup access for #{name} K3s nodes",
-              policy: {
+              policy: JSON.generate({
                 Version: '2012-10-17',
                 Statement: [{
                   Sid: 'EtcdBackupReadWrite',
@@ -243,7 +266,7 @@ module Pangea
                   Action: %w[s3:GetObject s3:PutObject s3:ListBucket],
                   Resource: ["arn:aws:s3:::#{etcd_bucket}", "arn:aws:s3:::#{etcd_bucket}/*"],
                 }],
-              },
+              }),
               tags: tags,
             )
             ctx.aws_iam_role_policy_attachment(:"#{name}_etcd_backup",
@@ -254,9 +277,8 @@ module Pangea
 
             iam.logs_policy = ctx.aws_iam_policy(
               :"#{name}_logs",
-              name: "#{name}-cloudwatch-logs",
               description: "CloudWatch log access for #{name} K3s nodes",
-              policy: {
+              policy: JSON.generate({
                 Version: '2012-10-17',
                 Statement: [{
                   Sid: 'CloudWatchLogs',
@@ -264,7 +286,7 @@ module Pangea
                   Action: %w[logs:CreateLogStream logs:PutLogEvents logs:DescribeLogStreams],
                   Resource: logs_resource,
                 }],
-              },
+              }),
               tags: tags,
             )
             ctx.aws_iam_role_policy_attachment(:"#{name}_logs",
@@ -289,9 +311,8 @@ module Pangea
 
             iam.ec2_policy = ctx.aws_iam_policy(
               :"#{name}_ec2_describe",
-              name: "#{name}-ec2-describe",
               description: "EC2 read-only metadata for #{name} K3s nodes",
-              policy: { Version: '2012-10-17', Statement: [ec2_statement] },
+              policy: JSON.generate({ Version: '2012-10-17', Statement: [ec2_statement] }),
               tags: tags,
             )
             ctx.aws_iam_role_policy_attachment(:"#{name}_ec2_describe",
@@ -300,9 +321,8 @@ module Pangea
             # ── Policy: SSM Session Manager ──────────────────────────
             iam.ssm_policy = ctx.aws_iam_policy(
               :"#{name}_ssm",
-              name: "#{name}-ssm-session",
               description: "SSM session access for #{name} K3s nodes",
-              policy: {
+              policy: JSON.generate({
                 Version: '2012-10-17',
                 Statement: [{
                   Sid: 'SSMCore',
@@ -321,7 +341,7 @@ module Pangea
                   Action: ['s3:PutObject'],
                   Resource: ["arn:aws:s3:::#{etcd_bucket}/ssm-logs/*"],
                 }],
-              },
+              }),
               tags: tags,
             )
             ctx.aws_iam_role_policy_attachment(:"#{name}_ssm",
@@ -330,25 +350,23 @@ module Pangea
             # ── CloudWatch Log Group ─────────────────────────────────
             iam.log_group = ctx.aws_cloudwatch_log_group(
               :"#{name}_logs",
-              name: log_group,
               retention_in_days: 30,
               tags: tags.merge(Name: "#{name}-logs")
             )
 
             # ── Karpenter IRSA role (opt-in, deployed post-cluster via GitOps)
             if config.karpenter_enabled
-              karpenter_assume = {
+              karpenter_assume = JSON.generate({
                 Version: '2012-10-17',
                 Statement: [{
                   Effect: 'Allow',
                   Principal: { Service: 'ec2.amazonaws.com' },
                   Action: 'sts:AssumeRole'
                 }]
-              }
+              })
 
               iam.karpenter_role = ctx.aws_iam_role(
                 :"#{name}_karpenter_role",
-                name: "#{name}-karpenter-role",
                 description: "Karpenter node role for #{name} (IRSA)",
                 assume_role_policy: karpenter_assume,
                 max_session_duration: 3600,
@@ -357,7 +375,6 @@ module Pangea
 
               iam.karpenter_profile = ctx.aws_iam_instance_profile(
                 :"#{name}_karpenter_profile",
-                name: "#{name}-karpenter-profile",
                 role: iam.karpenter_role.ref(:name),
                 tags: tags.merge(Name: "#{name}-karpenter-profile")
               )
@@ -380,37 +397,34 @@ module Pangea
 
             lt = ctx.aws_launch_template(
               :"#{name}_cp_lt",
-              name: "#{name}-cp-lt",
-              launch_template_data: {
-                image_id: ami_id,
-                instance_type: instance_type,
-                key_name: key_name,
-                user_data: cloud_init,
-                iam_instance_profile: instance_profile_name ? { name: instance_profile_name } : nil,
-                vpc_security_group_ids: sg_id ? [sg_id] : [],
-                metadata_options: {
-                  http_endpoint: 'enabled',
-                  http_tokens: 'required',
-                  http_put_response_hop_limit: 1,
-                  instance_metadata_tags: 'enabled',
-                },
-                block_device_mappings: [{
-                  device_name: '/dev/xvda',
-                  ebs: {
-                    volume_size: system_pool.disk_size_gb,
-                    volume_type: 'gp3',
-                    encrypted: true,
-                  }
-                }],
-                tag_specifications: [{
-                  resource_type: 'instance',
-                  tags: tags.merge(
-                    Name: "#{name}-cp",
-                    Role: 'control-plane',
-                    Distribution: config.distribution.to_s
-                  )
-                }],
-              },
+              image_id: ami_id,
+              instance_type: instance_type,
+              key_name: key_name,
+              user_data: cloud_init,
+              iam_instance_profile: instance_profile_name ? [{ name: instance_profile_name }] : nil,
+              vpc_security_group_ids: sg_id ? [sg_id] : [],
+              metadata_options: [{
+                http_endpoint: 'enabled',
+                http_tokens: 'required',
+                http_put_response_hop_limit: 1,
+                instance_metadata_tags: 'enabled',
+              }],
+              block_device_mappings: [{
+                device_name: '/dev/xvda',
+                ebs: {
+                  volume_size: system_pool.disk_size_gb,
+                  volume_type: 'gp3',
+                  encrypted: true,
+                }
+              }],
+              tag_specifications: [{
+                resource_type: 'instance',
+                tags: tags.merge(
+                  Name: "#{name}-cp",
+                  Role: 'control-plane',
+                  Distribution: config.distribution.to_s
+                )
+              }],
               tags: tags.merge(Name: "#{name}-cp-lt")
             )
 
@@ -419,15 +433,11 @@ module Pangea
             max_cp = system_pool.max_size || [cp_desired, 1].max
             asg = ctx.aws_autoscaling_group(
               :"#{name}_cp_asg",
-              name: "#{name}-cp-asg",
               min_size: cp_desired,
               max_size: [max_cp, cp_desired].max,
-              desired_capacity: cp_desired,
-              launch_template: { id: lt.id, version: '$Latest' },
-              vpc_zone_identifier: subnet_ids,
-              health_check_type: 'EC2',
+              launch_template: [{ id: lt.id, version: '$Latest' }],
               health_check_grace_period: 300,
-              tags: [
+              tag: [
                 { key: 'Name', value: "#{name}-cp", propagate_at_launch: true },
                 { key: 'KubernetesCluster', value: name.to_s, propagate_at_launch: true },
                 { key: 'Role', value: 'control-plane', propagate_at_launch: true }
@@ -439,7 +449,7 @@ module Pangea
               name: "#{name}-cp-nlb",
               internal: true,
               load_balancer_type: 'network',
-              subnet_ids: subnet_ids,
+              subnets: subnet_ids,
               tags: tags.merge(Name: "#{name}-cp-nlb")
             )
 
@@ -450,13 +460,13 @@ module Pangea
               protocol: 'TCP',
               vpc_id: result.network&.vpc&.id,
               target_type: 'instance',
-              health_check: {
+              health_check: [{
                 protocol: 'TCP',
                 port: '6443',
                 healthy_threshold: 3,
                 unhealthy_threshold: 3,
                 interval: 30,
-              },
+              }],
               tags: tags.merge(Name: "#{name}-cp-tg")
             )
 
@@ -503,51 +513,44 @@ module Pangea
 
             lt = ctx.aws_launch_template(
               :"#{pool_name}_lt",
-              name: "#{name}-#{pool_config.name}-lt",
-              launch_template_data: {
-                image_id: ami_id,
-                instance_type: instance_type,
-                key_name: key_name,
-                user_data: cloud_init,
-                iam_instance_profile: instance_profile_name ? { name: instance_profile_name } : nil,
-                vpc_security_group_ids: sg_id ? [sg_id] : [],
-                metadata_options: {
-                  http_endpoint: 'enabled',
-                  http_tokens: 'required',
-                  http_put_response_hop_limit: 1,
-                  instance_metadata_tags: 'enabled',
-                },
-                block_device_mappings: [{
-                  device_name: '/dev/xvda',
-                  ebs: {
-                    volume_size: pool_config.disk_size_gb,
-                    volume_type: 'gp3',
-                    encrypted: true,
-                  }
-                }],
-                tag_specifications: [{
-                  resource_type: 'instance',
-                  tags: tags.merge(
-                    Name: "#{name}-#{pool_config.name}",
-                    Role: 'worker',
-                    NodePool: pool_config.name.to_s
-                  )
-                }],
-              },
+              image_id: ami_id,
+              instance_type: instance_type,
+              key_name: key_name,
+              user_data: cloud_init,
+              iam_instance_profile: instance_profile_name ? [{ name: instance_profile_name }] : nil,
+              vpc_security_group_ids: sg_id ? [sg_id] : [],
+              metadata_options: [{
+                http_endpoint: 'enabled',
+                http_tokens: 'required',
+                http_put_response_hop_limit: 1,
+                instance_metadata_tags: 'enabled',
+              }],
+              block_device_mappings: [{
+                device_name: '/dev/xvda',
+                ebs: {
+                  volume_size: pool_config.disk_size_gb,
+                  volume_type: 'gp3',
+                  encrypted: true,
+                }
+              }],
+              tag_specifications: [{
+                resource_type: 'instance',
+                tags: tags.merge(
+                  Name: "#{name}-#{pool_config.name}",
+                  Role: 'worker',
+                  NodePool: pool_config.name.to_s
+                )
+              }],
               tags: tags.merge(Name: "#{name}-#{pool_config.name}-lt")
             )
 
             ctx.aws_autoscaling_group(
               :"#{pool_name}_asg",
-              name: "#{name}-#{pool_config.name}-asg",
               min_size: pool_config.min_size,
               max_size: pool_config.max_size,
-              desired_capacity: pool_config.effective_desired_size,
-              launch_template: { id: lt.id, version: '$Latest' },
-              vpc_zone_identifier: subnet_ids,
-              health_check_type: 'EC2',
+              launch_template: [{ id: lt.id, version: '$Latest' }],
               health_check_grace_period: 300,
-              tags: [
+              tag: [
                 { key: 'Name', value: "#{name}-#{pool_config.name}", propagate_at_launch: true },
                 { key: 'KubernetesCluster', value: name.to_s, propagate_at_launch: true },
                 { key: 'NodePool', value: pool_config.name.to_s, propagate_at_launch: true }
