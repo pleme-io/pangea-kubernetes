@@ -73,31 +73,35 @@ module Pangea
             validate_cidr_restrictions!(config)
             network = Architecture::NetworkResult.new
 
-            # S3 bucket for etcd backups (versioned, encrypted, no public access)
-            etcd_bucket = config.tags[:etcd_backup_bucket] || config.tags['etcd_backup_bucket'] || "#{name}-etcd-backups"
-            network.etcd_bucket = ctx.aws_s3_bucket(
-              :"#{name}_etcd",
-              bucket: etcd_bucket,
-              tags: tags.merge(Name: etcd_bucket)
-            )
-            ctx.aws_s3_bucket_versioning(
-              :"#{name}_etcd_versioning",
-              bucket: network.etcd_bucket.id,
-              versioning_configuration: { status: 'Enabled' }
-            )
-            ctx.aws_s3_bucket_server_side_encryption_configuration(
-              :"#{name}_etcd_encryption",
-              bucket: network.etcd_bucket.id,
-              rule: [{ apply_server_side_encryption_by_default: { sse_algorithm: 'AES256' } }]
-            )
-            ctx.aws_s3_bucket_public_access_block(
-              :"#{name}_etcd_public_access",
-              bucket: network.etcd_bucket.id,
-              block_public_acls: true,
-              block_public_policy: true,
-              ignore_public_acls: true,
-              restrict_public_buckets: true
-            )
+            # S3 bucket for etcd backups (optional — disable for dev clusters)
+            if config.etcd_backup_enabled
+              etcd_bucket = config.tags[:etcd_backup_bucket] || config.tags['etcd_backup_bucket'] || "#{name}-etcd-backups"
+              network.etcd_bucket = ctx.aws_s3_bucket(
+                :"#{name}_etcd",
+                bucket: etcd_bucket,
+                tags: tags.merge(Name: etcd_bucket)
+              )
+              if config.etcd_backup_versioning
+                ctx.aws_s3_bucket_versioning(
+                  :"#{name}_etcd_versioning",
+                  bucket: network.etcd_bucket.id,
+                  versioning_configuration: { status: 'Enabled' }
+                )
+              end
+              ctx.aws_s3_bucket_server_side_encryption_configuration(
+                :"#{name}_etcd_encryption",
+                bucket: network.etcd_bucket.id,
+                rule: [{ apply_server_side_encryption_by_default: { sse_algorithm: 'AES256' } }]
+              )
+              ctx.aws_s3_bucket_public_access_block(
+                :"#{name}_etcd_public_access",
+                bucket: network.etcd_bucket.id,
+                block_public_acls: true,
+                block_public_policy: true,
+                ignore_public_acls: true,
+                restrict_public_buckets: true
+              )
+            end
 
             vpc_cidr = config.network&.vpc_cidr || '10.0.0.0/16'
             network.vpc = ctx.aws_vpc(
@@ -254,23 +258,25 @@ module Pangea
             ctx.aws_iam_role_policy_attachment(:"#{name}_ecr_read",
                                               role: iam.role.ref(:name), policy_arn: iam.ecr_policy.ref(:arn))
 
-            # ── Policy: S3 Etcd Backup ───────────────────────────────
-            iam.etcd_policy = ctx.aws_iam_policy(
-              :"#{name}_etcd_backup",
-              description: "S3 etcd backup access for #{name} K3s nodes",
-              policy: JSON.generate({
-                Version: '2012-10-17',
-                Statement: [{
-                  Sid: 'EtcdBackupReadWrite',
-                  Effect: 'Allow',
-                  Action: %w[s3:GetObject s3:PutObject s3:ListBucket],
-                  Resource: ["arn:aws:s3:::#{etcd_bucket}", "arn:aws:s3:::#{etcd_bucket}/*"],
-                }],
-              }),
-              tags: tags,
-            )
-            ctx.aws_iam_role_policy_attachment(:"#{name}_etcd_backup",
-                                              role: iam.role.ref(:name), policy_arn: iam.etcd_policy.ref(:arn))
+            # ── Policy: S3 Etcd Backup (conditional) ─────────────────
+            if config.etcd_backup_enabled
+              iam.etcd_policy = ctx.aws_iam_policy(
+                :"#{name}_etcd_backup",
+                description: "S3 etcd backup access for #{name} K3s nodes",
+                policy: JSON.generate({
+                  Version: '2012-10-17',
+                  Statement: [{
+                    Sid: 'EtcdBackupReadWrite',
+                    Effect: 'Allow',
+                    Action: %w[s3:GetObject s3:PutObject s3:ListBucket],
+                    Resource: ["arn:aws:s3:::#{etcd_bucket}", "arn:aws:s3:::#{etcd_bucket}/*"],
+                  }],
+                }),
+                tags: tags,
+              )
+              ctx.aws_iam_role_policy_attachment(:"#{name}_etcd_backup",
+                                                role: iam.role.ref(:name), policy_arn: iam.etcd_policy.ref(:arn))
+            end
 
             # ── Policy: CloudWatch Logs ──────────────────────────────
             logs_resource = ["arn:aws:logs:#{region}:#{account_id}:log-group:#{log_group}:*"]

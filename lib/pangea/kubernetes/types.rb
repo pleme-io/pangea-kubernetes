@@ -272,6 +272,14 @@ module Pangea
         # Karpenter itself is deployed post-cluster via GitOps.
         attribute :karpenter_enabled, T::Bool.default(false)
 
+        # Enable etcd backup S3 bucket creation (AWS only).
+        # Disable for dev clusters where etcd backups are unnecessary.
+        attribute :etcd_backup_enabled, T::Bool.default(true)
+
+        # Enable S3 versioning on the etcd backup bucket.
+        # Disable for dev/cost savings. Production should keep this on.
+        attribute :etcd_backup_versioning, T::Bool.default(true)
+
         # NixOS configuration (NixOS backends only)
         attribute :nixos, NixOSConfig.optional.default(nil)
 
