@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+require 'base64'
+
 # Copyright 2025 The Pangea Authors
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -616,7 +618,7 @@ module Pangea
             cp_lt_attrs = {
               image_id: ami_id,
               instance_type: instance_type,
-              user_data: cloud_init,
+              user_data: Base64.strict_encode64(cloud_init),
               iam_instance_profile: instance_profile_name ? { name: instance_profile_name } : nil,
               vpc_security_group_ids: sg_id ? [sg_id] : [],
               metadata_options: {
@@ -941,7 +943,7 @@ module Pangea
             worker_lt_attrs = {
               image_id: ami_id,
               instance_type: instance_type,
-              user_data: cloud_init,
+              user_data: Base64.strict_encode64(cloud_init),
               iam_instance_profile: instance_profile_name ? { name: instance_profile_name } : nil,
               vpc_security_group_ids: sg_id ? [sg_id] : [],
               metadata_options: {
