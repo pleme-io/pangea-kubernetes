@@ -137,22 +137,36 @@ module Pangea
               gateway_id: network.igw.id
             )
 
-            # ── NAT Gateway (in first public subnet for private tier egress)
-            eip = ctx.aws_eip(
-              :"#{name}_nat_eip",
-              tags: tags.merge(Name: "#{name}-nat-eip")
-            )
+            # ── CIDR Layout (organized by tier × AZ) ───────────────
+            #
+            #   VPC: 10.0.0.0/16
+            #
+            #   Public tier  (NLBs, NAT, bastions — internet-facing):
+            #     10.0.0.0/24   public-a   us-east-1a
+            #     10.0.1.0/24   public-b   us-east-1b
+            #     10.0.2.0/24   public-c   us-east-1c
+            #
+            #   Web tier  (K8s nodes, apps — private, NAT egress):
+            #     10.0.10.0/24  web-a      us-east-1a
+            #     10.0.11.0/24  web-b      us-east-1b
+            #     10.0.12.0/24  web-c      us-east-1c
+            #
+            #   Data tier  (databases, caches — private, no internet):
+            #     10.0.20.0/24  data-a     us-east-1a
+            #     10.0.21.0/24  data-b     us-east-1b
+            #     10.0.22.0/24  data-c     us-east-1c
+            #
+            azs = %w[a b c]
 
-            # ── Public Subnets (NLBs, NAT gateways, bastions) ──────
-            # CIDR: 10.0.0.0/24, 10.0.1.0/24
-            %w[a b].each_with_index do |az, idx|
+            # ── Public Subnets ──────────────────────────────────────
+            azs.each_with_index do |az, idx|
               subnet = ctx.aws_subnet(
                 :"#{name}_public_#{az}",
                 vpc_id: network.vpc.id,
                 cidr_block: "10.0.#{idx}.0/24",
                 availability_zone: "#{config.region}#{az}",
                 map_public_ip_on_launch: true,
-                tags: tags.merge(Name: "#{name}-public-#{az}")
+                tags: tags.merge(Name: "#{name}-public-#{az}", Tier: 'public')
               )
               network.add_subnet(:"public_#{az}", subnet, tier: :public)
 
@@ -163,7 +177,12 @@ module Pangea
               )
             end
 
-            # NAT Gateway sits in the first public subnet
+            # ── NAT Gateway (in public-a for private tier egress) ───
+            eip = ctx.aws_eip(
+              :"#{name}_nat_eip",
+              tags: tags.merge(Name: "#{name}-nat-eip")
+            )
+
             nat_gw = ctx.aws_nat_gateway(
               :"#{name}_nat",
               allocation_id: eip.id,
@@ -171,7 +190,7 @@ module Pangea
               tags: tags.merge(Name: "#{name}-nat")
             )
 
-            # ── Web Tier Route Table (NAT → internet for egress) ────
+            # ── Web Tier Route Table (egress via NAT) ───────────────
             web_rt = ctx.aws_route_table(
               :"#{name}_web_rt",
               vpc_id: network.vpc.id,
@@ -185,16 +204,15 @@ module Pangea
               nat_gateway_id: nat_gw.id
             )
 
-            # ── Web Tier Subnets (K8s nodes, application workloads) ─
-            # CIDR: 10.0.10.0/24, 10.0.11.0/24
-            %w[a b].each_with_index do |az, idx|
+            # ── Web Subnets ─────────────────────────────────────────
+            azs.each_with_index do |az, idx|
               subnet = ctx.aws_subnet(
                 :"#{name}_web_#{az}",
                 vpc_id: network.vpc.id,
                 cidr_block: "10.0.#{10 + idx}.0/24",
                 availability_zone: "#{config.region}#{az}",
                 map_public_ip_on_launch: false,
-                tags: tags.merge(Name: "#{name}-web-#{az}")
+                tags: tags.merge(Name: "#{name}-web-#{az}", Tier: 'web')
               )
               network.add_subnet(:"web_#{az}", subnet, tier: :web)
 
@@ -205,23 +223,22 @@ module Pangea
               )
             end
 
-            # ── Data Tier Route Table (no internet egress by default) ─
+            # ── Data Tier Route Table (no internet, VPC-local only) ─
             data_rt = ctx.aws_route_table(
               :"#{name}_data_rt",
               vpc_id: network.vpc.id,
               tags: tags.merge(Name: "#{name}-data-rt")
             )
 
-            # ── Data Tier Subnets (databases, caches, internal) ─────
-            # CIDR: 10.0.20.0/24, 10.0.21.0/24
-            %w[a b].each_with_index do |az, idx|
+            # ── Data Subnets ────────────────────────────────────────
+            azs.each_with_index do |az, idx|
               subnet = ctx.aws_subnet(
                 :"#{name}_data_#{az}",
                 vpc_id: network.vpc.id,
                 cidr_block: "10.0.#{20 + idx}.0/24",
                 availability_zone: "#{config.region}#{az}",
                 map_public_ip_on_launch: false,
-                tags: tags.merge(Name: "#{name}-data-#{az}")
+                tags: tags.merge(Name: "#{name}-data-#{az}", Tier: 'data')
               )
               network.add_subnet(:"data_#{az}", subnet, tier: :data)
 
