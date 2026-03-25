@@ -656,6 +656,7 @@ module Pangea
               min_size: cp_desired,
               max_size: [max_cp, cp_desired].max,
               launch_template: { id: lt.id, version: '$Latest' },
+              vpc_zone_identifier: subnet_ids,
               health_check_grace_period: 300,
               tag: [
                 { key: 'Name', value: "#{name}-cp", propagate_at_launch: true },
@@ -978,6 +979,7 @@ module Pangea
               min_size: pool_config.min_size,
               max_size: pool_config.max_size,
               launch_template: { id: lt.id, version: '$Latest' },
+              vpc_zone_identifier: subnet_ids,
               health_check_grace_period: 300,
               tag: [
                 { key: 'Name', value: "#{name}-#{pool_config.name}", propagate_at_launch: true },
