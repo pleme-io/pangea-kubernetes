@@ -91,10 +91,6 @@ module Pangea
             end
           end
 
-          def bootstrap_service(_distribution)
-            'kindling-server-bootstrap'
-          end
-
           def config_path
             '/etc/pangea/cluster-config.json'
           end
@@ -111,7 +107,7 @@ module Pangea
             end
           end
 
-          def generate_cloud_init_yaml(config, distribution)
+          def generate_cloud_init_yaml(config, _distribution)
             <<~YAML
               #cloud-config
               write_files:
@@ -119,7 +115,9 @@ module Pangea
                   content: '#{config.to_json}'
                   permissions: '0640'
               runcmd:
-                - ['systemctl', 'start', '#{bootstrap_service(distribution)}']
+                - ['nix', '--extra-experimental-features', 'nix-command flakes', 'run',
+                   'github:pleme-io/kindling', '--', 'server', 'bootstrap',
+                   '--config', '#{config_path}']
             YAML
           end
         end
