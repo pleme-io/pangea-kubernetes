@@ -83,7 +83,7 @@ module Pangea
             ctx.aws_s3_bucket_versioning(
               :"#{name}_etcd_versioning",
               bucket: network.etcd_bucket.id,
-              versioning_configuration: [{ status: 'Enabled' }]
+              versioning_configuration: { status: 'Enabled' }
             )
             ctx.aws_s3_bucket_server_side_encryption_configuration(
               :"#{name}_etcd_encryption",
@@ -401,14 +401,14 @@ module Pangea
               instance_type: instance_type,
               key_name: key_name,
               user_data: cloud_init,
-              iam_instance_profile: instance_profile_name ? [{ name: instance_profile_name }] : nil,
+              iam_instance_profile: instance_profile_name ? { name: instance_profile_name } : nil,
               vpc_security_group_ids: sg_id ? [sg_id] : [],
-              metadata_options: [{
+              metadata_options: {
                 http_endpoint: 'enabled',
                 http_tokens: 'required',
                 http_put_response_hop_limit: 1,
                 instance_metadata_tags: 'enabled',
-              }],
+              },
               block_device_mappings: [{
                 device_name: '/dev/xvda',
                 ebs: {
@@ -435,7 +435,7 @@ module Pangea
               :"#{name}_cp_asg",
               min_size: cp_desired,
               max_size: [max_cp, cp_desired].max,
-              launch_template: [{ id: lt.id, version: '$Latest' }],
+              launch_template: { id: lt.id, version: '$Latest' },
               health_check_grace_period: 300,
               tag: [
                 { key: 'Name', value: "#{name}-cp", propagate_at_launch: true },
@@ -460,13 +460,13 @@ module Pangea
               protocol: 'TCP',
               vpc_id: result.network&.vpc&.id,
               target_type: 'instance',
-              health_check: [{
+              health_check: {
                 protocol: 'TCP',
                 port: '6443',
                 healthy_threshold: 3,
                 unhealthy_threshold: 3,
                 interval: 30,
-              }],
+              },
               tags: tags.merge(Name: "#{name}-cp-tg")
             )
 
@@ -517,14 +517,14 @@ module Pangea
               instance_type: instance_type,
               key_name: key_name,
               user_data: cloud_init,
-              iam_instance_profile: instance_profile_name ? [{ name: instance_profile_name }] : nil,
+              iam_instance_profile: instance_profile_name ? { name: instance_profile_name } : nil,
               vpc_security_group_ids: sg_id ? [sg_id] : [],
-              metadata_options: [{
+              metadata_options: {
                 http_endpoint: 'enabled',
                 http_tokens: 'required',
                 http_put_response_hop_limit: 1,
                 instance_metadata_tags: 'enabled',
-              }],
+              },
               block_device_mappings: [{
                 device_name: '/dev/xvda',
                 ebs: {
@@ -548,7 +548,7 @@ module Pangea
               :"#{pool_name}_asg",
               min_size: pool_config.min_size,
               max_size: pool_config.max_size,
-              launch_template: [{ id: lt.id, version: '$Latest' }],
+              launch_template: { id: lt.id, version: '$Latest' },
               health_check_grace_period: 300,
               tag: [
                 { key: 'Name', value: "#{name}-#{pool_config.name}", propagate_at_launch: true },
