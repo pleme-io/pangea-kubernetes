@@ -1023,4 +1023,340 @@ RSpec.describe 'AwsNixos security hardening' do
       expect(rules.first[:attrs][:cidr_blocks]).to eq(['24.158.175.41/32'])
     end
   end
+
+  # ── KMS with Pre-Existing Key ARN ──────────────────────────────
+
+  describe 'KMS logs with existing key_arn' do
+    let(:kms_arn_config) do
+      Pangea::Kubernetes::Types::ClusterConfig.new(
+        backend: :aws_nixos, kubernetes_version: '1.29', region: 'us-east-1',
+        distribution: :k3s, profile: 'cilium-standard',
+        ami_id: 'ami-test', key_pair: 'test-key', account_id: '123456789012',
+        node_pools: [{ name: :system, instance_types: ['t3.medium'], min_size: 1, max_size: 1 }],
+        network: { vpc_cidr: '10.0.0.0/16' },
+        kms_logs_enabled: true,
+        kms_key_arn: 'arn:aws:kms:us-east-1:123456789012:key/existing-key-id',
+      )
+    end
+    let(:kms_arn_ctx) { create_mock_context }
+
+    before { Pangea::Kubernetes::Backends::AwsNixos.create_iam(kms_arn_ctx, :test, kms_arn_config, base_tags) }
+
+    it 'does NOT create a new KMS key' do
+      kms_keys = kms_arn_ctx.created_resources.select { |r| r[:type] == 'aws_kms_key' }
+      expect(kms_keys).to be_empty
+    end
+
+    it 'uses the provided key ARN on the log group' do
+      log_group = kms_arn_ctx.find_resource(:aws_cloudwatch_log_group, :test_logs)
+      expect(log_group[:attrs][:kms_key_id]).to eq('arn:aws:kms:us-east-1:123456789012:key/existing-key-id')
+    end
+  end
+
+  # ── Etcd Backup Disabled ───────────────────────────────────────
+
+  describe 'etcd backup disabled (cost default)' do
+    let(:no_etcd_config) do
+      Pangea::Kubernetes::Types::ClusterConfig.new(
+        backend: :aws_nixos, kubernetes_version: '1.29', region: 'us-east-1',
+        distribution: :k3s, profile: 'cilium-standard',
+        ami_id: 'ami-test', key_pair: 'test-key', account_id: '123456789012',
+        node_pools: [{ name: :system, instance_types: ['t3.medium'], min_size: 1, max_size: 1 }],
+        network: { vpc_cidr: '10.0.0.0/16' },
+        etcd_backup_enabled: false,
+      )
+    end
+    let(:ne_ctx) { create_mock_context }
+
+    it 'creates no S3 bucket' do
+      Pangea::Kubernetes::Backends::AwsNixos.create_network(ne_ctx, :test, no_etcd_config, base_tags)
+      buckets = ne_ctx.created_resources.select { |r| r[:type] == 'aws_s3_bucket' }
+      expect(buckets).to be_empty
+    end
+
+    it 'creates only 4 IAM policies (no etcd S3 policy)' do
+      Pangea::Kubernetes::Backends::AwsNixos.create_iam(ne_ctx, :test, no_etcd_config, base_tags)
+      policies = ne_ctx.created_resources.select { |r| r[:type] == 'aws_iam_policy' }
+      expect(policies.size).to eq(4)
+      policy_names = policies.map { |r| r[:name].to_s }
+      expect(policy_names).not_to include('test_etcd_backup')
+    end
+  end
+
+  # ── SSM-Only Worker LTs ────────────────────────────────────────
+
+  describe 'SSM-only worker launch templates' do
+    let(:ssm_worker_config) do
+      Pangea::Kubernetes::Types::ClusterConfig.new(
+        backend: :aws_nixos, kubernetes_version: '1.29', region: 'us-east-1',
+        distribution: :k3s, profile: 'cilium-standard',
+        ami_id: 'ami-test', key_pair: 'test-key', account_id: '123456789012',
+        node_pools: [
+          { name: :system, instance_types: ['t3.medium'], min_size: 1, max_size: 1 },
+          { name: :worker, instance_types: ['t3.medium'], min_size: 1, max_size: 2 },
+        ],
+        network: { vpc_cidr: '10.0.0.0/16' },
+        ssm_only: true,
+      )
+    end
+    let(:sw_ctx) { create_mock_context }
+    let(:sw_network) { Pangea::Kubernetes::Backends::AwsNixos.create_network(sw_ctx, :test, ssm_worker_config, base_tags) }
+    let(:sw_iam) { Pangea::Kubernetes::Backends::AwsNixos.create_iam(sw_ctx, :test, ssm_worker_config, base_tags) }
+    let(:sw_result) do
+      r = Pangea::Kubernetes::Architecture::ArchitectureResult.new(:test, ssm_worker_config)
+      r.network = sw_network
+      r.iam = sw_iam
+      r
+    end
+
+    before do
+      cluster_ref = Pangea::Kubernetes::Backends::AwsNixos.create_cluster(sw_ctx, :test, ssm_worker_config, sw_result, base_tags)
+      ssm_worker_config.worker_node_pools.each do |pool|
+        Pangea::Kubernetes::Backends::AwsNixos.create_node_pool(sw_ctx, :test, cluster_ref, pool, base_tags)
+      end
+    end
+
+    it 'worker launch template has no key_name' do
+      lt = sw_ctx.find_resource(:aws_launch_template, :test_worker_lt)
+      expect(lt[:attrs]).not_to have_key(:key_name)
+    end
+  end
+
+  # ── ALB TLS Policy ─────────────────────────────────────────────
+
+  describe 'ALB TLS hardening' do
+    let(:tls_config) do
+      Pangea::Kubernetes::Types::ClusterConfig.new(
+        backend: :aws_nixos, kubernetes_version: '1.29', region: 'us-east-1',
+        distribution: :k3s, profile: 'cilium-standard',
+        ami_id: 'ami-test', key_pair: 'test-key', account_id: '123456789012',
+        node_pools: [{ name: :system, instance_types: ['t3.medium'], min_size: 1, max_size: 1 }],
+        network: { vpc_cidr: '10.0.0.0/16' },
+        ingress_alb_enabled: true,
+        ingress_alb_certificate_arn: 'arn:aws:acm:us-east-1:123:certificate/test',
+      )
+    end
+    let(:tls_ctx) { create_mock_context }
+    let(:tls_network) { Pangea::Kubernetes::Backends::AwsNixos.create_network(tls_ctx, :test, tls_config, base_tags) }
+    let(:tls_iam) { Pangea::Kubernetes::Backends::AwsNixos.create_iam(tls_ctx, :test, tls_config, base_tags) }
+    let(:tls_result) do
+      r = Pangea::Kubernetes::Architecture::ArchitectureResult.new(:test, tls_config)
+      r.network = tls_network
+      r.iam = tls_iam
+      r
+    end
+
+    before { Pangea::Kubernetes::Backends::AwsNixos.create_cluster(tls_ctx, :test, tls_config, tls_result, base_tags) }
+
+    it 'uses TLS 1.2+ policy on HTTPS listener' do
+      listener = tls_ctx.find_resource(:aws_lb_listener, :test_ingress_https)
+      expect(listener[:attrs][:ssl_policy]).to eq('ELBSecurityPolicy-TLS13-1-2-2021-06')
+    end
+
+    it 'redirects HTTP to HTTPS when cert is present' do
+      http = tls_ctx.find_resource(:aws_lb_listener, :test_ingress_http)
+      action = http[:attrs][:default_action].first
+      expect(action[:type]).to eq('redirect')
+      expect(action[:redirect][:protocol]).to eq('HTTPS')
+    end
+  end
+
+  # ── VPC Stateful Resource Protection ───────────────────────────
+
+  describe 'VPC lifecycle protection' do
+    before { network }
+
+    it 'VPC has prevent_destroy lifecycle' do
+      vpc = ctx.find_resource(:aws_vpc, :kazoku_vpc)
+      expect(vpc[:attrs][:lifecycle]).to eq({ prevent_destroy: true })
+    end
+  end
+
+  # ── Data Tier Isolation ────────────────────────────────────────
+
+  describe 'data tier network isolation' do
+    before { network }
+
+    it 'data subnets do NOT have public IP on launch' do
+      data_subnets = ctx.created_resources.select { |r|
+        r[:type] == 'aws_subnet' && r[:attrs][:tags]&.dig(:Tier) == 'data'
+      }
+      expect(data_subnets.size).to eq(3)
+      data_subnets.each do |s|
+        expect(s[:attrs][:map_public_ip_on_launch]).to be false
+      end
+    end
+
+    it 'data route table has NO default internet route' do
+      data_routes = ctx.created_resources.select { |r|
+        r[:type] == 'aws_route' && r[:name].to_s.include?('data')
+      }
+      expect(data_routes).to be_empty
+    end
+  end
+
+  # ── KMS Key Policy Least Privilege ─────────────────────────────
+
+  describe 'KMS key policy least privilege' do
+    let(:kms_policy_config) do
+      Pangea::Kubernetes::Types::ClusterConfig.new(
+        backend: :aws_nixos, kubernetes_version: '1.29', region: 'us-east-1',
+        distribution: :k3s, profile: 'cilium-standard',
+        ami_id: 'ami-test', key_pair: 'test-key', account_id: '123456789012',
+        node_pools: [{ name: :system, instance_types: ['t3.medium'], min_size: 1, max_size: 1 }],
+        network: { vpc_cidr: '10.0.0.0/16' },
+        kms_logs_enabled: true,
+      )
+    end
+    let(:kp_ctx) { create_mock_context }
+
+    before { Pangea::Kubernetes::Backends::AwsNixos.create_iam(kp_ctx, :test, kms_policy_config, base_tags) }
+
+    it 'KMS key policy does NOT have kms:* wildcard' do
+      kms_key = kp_ctx.find_resource(:aws_kms_key, :test_logs_kms)
+      policy = JSON.parse(kms_key[:attrs][:policy])
+      all_actions = policy['Statement'].flat_map { |s| Array(s['Action']) }
+      expect(all_actions).not_to include('kms:*')
+    end
+
+    it 'KMS key policy does NOT allow kms:Encrypt or kms:Decrypt for admin' do
+      kms_key = kp_ctx.find_resource(:aws_kms_key, :test_logs_kms)
+      policy = JSON.parse(kms_key[:attrs][:policy])
+      admin_stmt = policy['Statement'].find { |s| s['Sid'] == 'AllowKeyAdmin' }
+      admin_actions = Array(admin_stmt['Action'])
+      expect(admin_actions).not_to include('kms:Encrypt')
+      expect(admin_actions).not_to include('kms:Decrypt')
+    end
+
+    it 'CloudWatch service can only encrypt/decrypt (no admin actions)' do
+      kms_key = kp_ctx.find_resource(:aws_kms_key, :test_logs_kms)
+      policy = JSON.parse(kms_key[:attrs][:policy])
+      cw_stmt = policy['Statement'].find { |s| s['Sid'] == 'AllowCloudWatchLogs' }
+      cw_actions = Array(cw_stmt['Action'])
+      expect(cw_actions).not_to include('kms:Delete*')
+      expect(cw_actions).not_to include('kms:Disable*')
+      expect(cw_actions).not_to include('kms:ScheduleKeyDeletion')
+    end
+  end
+
+  # ── IAM Trust Policy Scope ─────────────────────────────────────
+
+  describe 'IAM trust policy scope' do
+    before { iam }
+
+    it 'node role trusts ONLY ec2.amazonaws.com (no wildcard principals)' do
+      role = ctx.find_resource(:aws_iam_role, :kazoku_node_role)
+      trust = JSON.parse(role[:attrs][:assume_role_policy])
+      principals = trust['Statement'].flat_map { |s| Array(s.dig('Principal', 'Service') || s.dig('Principal', 'AWS')) }
+      expect(principals).to eq(['ec2.amazonaws.com'])
+    end
+  end
+
+  # ── Full Production Hardened Integration ────────────────────────
+
+  describe 'production-hardened cluster (all features on)' do
+    let(:prod_config) do
+      Pangea::Kubernetes::Types::ClusterConfig.new(
+        backend: :aws_nixos, kubernetes_version: '1.29', region: 'us-east-1',
+        distribution: :k3s, profile: 'cilium-standard',
+        ami_id: 'ami-test', account_id: '123456789012',
+        ingress_source_cidr: '24.158.175.41/32',
+        ssm_only: true,
+        sg_restrict_http_to_alb: true,
+        ingress_alb_enabled: true,
+        ingress_alb_certificate_arn: 'arn:aws:acm:us-east-1:123:certificate/test',
+        vpn_nlb_enabled: true,
+        flow_logs_enabled: true,
+        kms_logs_enabled: true,
+        nat_per_az: true,
+        etcd_backup_enabled: true,
+        etcd_backup_versioning: true,
+        etcd_backup_bucket: 'prod-etcd',
+        node_pools: [
+          { name: :system, instance_types: ['t3.medium'], min_size: 1, max_size: 3 },
+          { name: :worker, instance_types: ['t3.medium'], min_size: 2, max_size: 6 },
+        ],
+        network: { vpc_cidr: '10.0.0.0/16' },
+      )
+    end
+    let(:prod_ctx) { create_mock_context }
+    let(:prod_network) { Pangea::Kubernetes::Backends::AwsNixos.create_network(prod_ctx, :prod, prod_config, base_tags) }
+    let(:prod_iam) { Pangea::Kubernetes::Backends::AwsNixos.create_iam(prod_ctx, :prod, prod_config, base_tags) }
+    let(:prod_result) do
+      r = Pangea::Kubernetes::Architecture::ArchitectureResult.new(:prod, prod_config)
+      r.network = prod_network
+      r.iam = prod_iam
+      r
+    end
+
+    before do
+      cluster_ref = Pangea::Kubernetes::Backends::AwsNixos.create_cluster(prod_ctx, :prod, prod_config, prod_result, base_tags)
+      prod_config.worker_node_pools.each do |pool|
+        Pangea::Kubernetes::Backends::AwsNixos.create_node_pool(prod_ctx, :prod, cluster_ref, pool, base_tags)
+      end
+    end
+
+    it 'has ZERO 0.0.0.0/0 ingress rules anywhere' do
+      all_ingress = prod_ctx.created_resources.select { |r|
+        r[:type] == 'aws_security_group_rule' && r[:attrs][:type] == 'ingress'
+      }
+      open = all_ingress.select { |r| r[:attrs][:cidr_blocks]&.include?('0.0.0.0/0') }
+      expect(open).to be_empty,
+        "Production cluster must have zero 0.0.0.0/0 ingress. Found: #{open.map { |r| r[:attrs][:description] }}"
+    end
+
+    it 'has no SSH SG rule' do
+      all_ingress = prod_ctx.created_resources.select { |r|
+        r[:type] == 'aws_security_group_rule' && r[:attrs][:type] == 'ingress'
+      }
+      ssh = all_ingress.select { |r| r[:attrs][:description] == 'SSH' }
+      expect(ssh).to be_empty
+    end
+
+    it 'has no key_name on any launch template' do
+      lts = prod_ctx.created_resources.select { |r| r[:type] == 'aws_launch_template' }
+      lts.each do |lt|
+        expect(lt[:attrs]).not_to have_key(:key_name),
+          "Launch template #{lt[:name]} must not have key_name in SSM-only mode"
+      end
+    end
+
+    it 'has 3 NAT gateways' do
+      nats = prod_ctx.created_resources.select { |r| r[:type] == 'aws_nat_gateway' }
+      expect(nats.size).to eq(3)
+    end
+
+    it 'has VPC flow logs' do
+      flow = prod_ctx.find_resource(:aws_flow_log, :prod_vpc_flow_log)
+      expect(flow).not_to be_nil
+    end
+
+    it 'has KMS-encrypted CloudWatch logs' do
+      log_group = prod_ctx.find_resource(:aws_cloudwatch_log_group, :prod_logs)
+      expect(log_group[:attrs][:kms_key_id]).not_to be_nil
+    end
+
+    it 'has SG-to-SG rules for HTTP/HTTPS (not CIDR)' do
+      http_from_alb = prod_ctx.find_resource(:aws_security_group_rule, :prod_sg_http_from_alb)
+      expect(http_from_alb).not_to be_nil
+      expect(http_from_alb[:attrs][:source_security_group_id]).not_to be_nil
+      expect(http_from_alb[:attrs]).not_to have_key(:cidr_blocks)
+    end
+
+    it 'all volumes encrypted' do
+      lts = prod_ctx.created_resources.select { |r| r[:type] == 'aws_launch_template' }
+      lts.each do |lt|
+        ebs = lt[:attrs][:block_device_mappings]&.first&.dig(:ebs)
+        expect(ebs[:encrypted]).to be(true), "LT #{lt[:name]} must have encrypted volumes"
+      end
+    end
+
+    it 'all LTs enforce IMDSv2' do
+      lts = prod_ctx.created_resources.select { |r| r[:type] == 'aws_launch_template' }
+      lts.each do |lt|
+        expect(lt[:attrs][:metadata_options][:http_tokens]).to eq('required'),
+          "LT #{lt[:name]} must enforce IMDSv2"
+      end
+    end
+  end
 end
