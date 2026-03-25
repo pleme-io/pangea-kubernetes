@@ -83,7 +83,7 @@ RSpec.describe Pangea::Kubernetes::BareMetal::CloudInit, 'expanded fields' do
       yaml_old = described_class.generate(
         cluster_name: 'test',
         distribution: :k3s,
-        profile: 'cilium-standard',
+        profile: 'cloud-server',
         distribution_track: '1.34',
         role: 'server',
         node_index: 0,
@@ -124,7 +124,7 @@ RSpec.describe Pangea::Kubernetes::BareMetal::CloudInit, 'expanded fields' do
       yaml = described_class.generate(
         cluster_name: 'production',
         distribution: :k3s,
-        profile: 'cilium-standard',
+        profile: 'cloud-server',
         distribution_track: '1.34',
         role: 'server',
         node_index: 0,

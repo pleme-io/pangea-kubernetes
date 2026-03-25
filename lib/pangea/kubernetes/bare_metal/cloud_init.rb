@@ -53,7 +53,7 @@ module Pangea
           # @param bootstrap_secrets [Hash, nil] Bootstrap secrets (age key, tokens) written at first boot
           # @param format [Symbol] :shell (NixOS AMIs) or :cloud_config (real cloud-init)
           # @return [String] user_data string
-          def generate(cluster_name:, distribution: :k3s, profile: 'cilium-standard',
+          def generate(cluster_name:, distribution: :k3s, profile: 'cloud-server',
                        distribution_track: '1.34', role: 'server', node_index: 0,
                        cluster_init: false, network_id: nil, join_server: nil,
                        fluxcd: nil, argocd: nil, k3s: nil, kubernetes: nil, secrets: nil,

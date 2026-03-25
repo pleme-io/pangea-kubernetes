@@ -33,7 +33,7 @@ RSpec.describe 'CloudInit edge cases' do
         result = described_class.generate(
           cluster_name: 'test',
           distribution: :k3s,
-          profile: 'cilium-standard',
+          profile: 'cloud-server',
           distribution_track: '1.34',
           role: 'server',
           node_index: 0,
@@ -46,7 +46,7 @@ RSpec.describe 'CloudInit edge cases' do
         result = described_class.generate(
           cluster_name: 'test',
           distribution: :k3s,
-          profile: 'cilium-standard',
+          profile: 'cloud-server',
           distribution_track: '1.34',
           role: 'agent',
           node_index: 0,
@@ -61,7 +61,7 @@ RSpec.describe 'CloudInit edge cases' do
         result = described_class.generate(
           cluster_name: 'test',
           distribution: :k3s,
-          profile: 'cilium-standard',
+          profile: 'cloud-server',
           distribution_track: '1.34',
           role: 'server',
           node_index: 0,
@@ -82,7 +82,7 @@ RSpec.describe 'CloudInit edge cases' do
         result = described_class.generate(
           cluster_name: 'test',
           distribution: :k3s,
-          profile: 'cilium-standard',
+          profile: 'cloud-server',
           distribution_track: '1.34',
           role: 'server',
           node_index: 0,
@@ -102,7 +102,7 @@ RSpec.describe 'CloudInit edge cases' do
         result = described_class.generate(
           cluster_name: 'test',
           distribution: :k3s,
-          profile: 'cilium-standard',
+          profile: 'cloud-server',
           distribution_track: '1.34',
           role: 'server',
           node_index: 5,
@@ -146,11 +146,11 @@ RSpec.describe 'CloudInit edge cases' do
         expect(result).to include('"distribution":"k3s"')
       end
 
-      it 'uses default profile (cilium-standard)' do
+      it 'uses default profile (cloud-server)' do
         result = described_class.generate(
           cluster_name: 'test'
         )
-        expect(result).to include('"profile":"cilium-standard"')
+        expect(result).to include('"profile":"cloud-server"')
       end
 
       it 'uses default distribution_track (1.34)' do

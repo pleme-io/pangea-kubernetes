@@ -50,6 +50,7 @@ module Pangea
 
       # Profiles from blackmatter-kubernetes lib/profiles.nix
       SUPPORTED_PROFILES = %w[
+        cloud-server
         flannel-minimal flannel-standard flannel-production
         calico-standard calico-hardened
         cilium-standard cilium-mesh
@@ -252,7 +253,7 @@ module Pangea
         # Blackmatter-kubernetes profile (NixOS backends only)
         attribute :profile, T::String.constrained(
           included_in: SUPPORTED_PROFILES
-        ).default('cilium-standard')
+        ).default('cloud-server')
 
         # Distribution version track (e.g., '1.34', '1.35')
         attribute :distribution_track, T::String.optional.default(nil)

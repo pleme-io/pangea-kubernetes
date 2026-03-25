@@ -125,7 +125,7 @@ module Pangea
           BareMetal::CloudInit.generate(
             cluster_name: name.to_s,
             distribution: tags[:Distribution]&.to_sym || :k3s,
-            profile: tags[:Profile] || 'cilium-standard',
+            profile: tags[:Profile] || 'cloud-server',
             distribution_track: track,
             role: 'agent',
             node_index: 0,

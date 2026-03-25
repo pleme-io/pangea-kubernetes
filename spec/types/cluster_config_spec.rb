@@ -79,9 +79,9 @@ RSpec.describe Pangea::Kubernetes::Types::ClusterConfig do
       expect(config.distribution).to eq(:k3s)
     end
 
-    it 'defaults profile to cilium-standard' do
+    it 'defaults profile to cloud-server' do
       config = described_class.new(minimal_attrs)
-      expect(config.profile).to eq('cilium-standard')
+      expect(config.profile).to eq('cloud-server')
     end
   end
 
