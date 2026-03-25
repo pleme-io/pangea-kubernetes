@@ -229,3 +229,51 @@ bundle exec rspec spec/load_balancer/          # LB tier tests
 4. Register in `BackendRegistry::BACKEND_MAP`
 5. Add specs under `spec/backends/new_backend/`
 6. Add cross-backend specs if the new backend has unique constraints
+
+## Typed Result Classes
+
+Backend phase methods return typed result structs from `Pangea::Contracts` (pangea-core):
+
+| Contract | Phase | Key fields |
+|----------|-------|------------|
+| `NetworkResult` | `create_network` | vpc, subnets, security_groups, nat |
+| `IamResult` | `create_iam` | roles, policies, instance_profiles |
+| `ClusterResult` | `create_cluster` | control_plane, endpoint, certificate_authority |
+| `ArchitectureResult` | Full return | network, iam, cluster, node_pools |
+
+These contracts enforce that all backends return the same typed shape regardless
+of cloud provider. Templates and architectures can rely on `result.network.vpc`
+rather than provider-specific hash keys.
+
+## TypedSynthesizerContext
+
+`spec/support/typed_synthesizer_context.rb` provides a test helper that wraps
+`TerraformSynthesizer` with real `Dry::Struct` type validation. Tests using
+`TypedSynthesizerContext` verify that resource function calls pass type checks
+at synthesis time, catching type mismatches before deployment.
+
+```ruby
+# spec/typed_synthesizer_context_spec.rb
+RSpec.describe 'TypedSynthesizerContext' do
+  let(:ctx) { TypedSynthesizerContext.new }
+
+  it 'validates types on resource calls' do
+    expect { ctx.aws_vpc(:test, cidr_block: 123) }.to raise_error(Dry::Struct::Error)
+  end
+end
+```
+
+## Typed Backend Contract (shared examples)
+
+`spec/support/shared_examples/typed_backend_contract.rb` defines shared RSpec
+examples that all backends must pass. Ensures each backend returns the correct
+contract types from each phase method:
+
+```ruby
+RSpec.shared_examples 'typed backend contract' do
+  it 'returns NetworkResult from create_network' do
+    result = backend.create_network(synth, name, config, tags)
+    expect(result).to be_a(Pangea::Contracts::NetworkResult)
+  end
+end
+```
