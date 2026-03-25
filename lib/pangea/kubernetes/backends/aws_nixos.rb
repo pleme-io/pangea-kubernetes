@@ -104,6 +104,8 @@ module Pangea
             end
 
             vpc_cidr = config.network&.vpc_cidr || '10.0.0.0/16'
+
+            # ── VPC ─────────────────────────────────────────────────
             network.vpc = ctx.aws_vpc(
               :"#{name}_vpc",
               cidr_block: vpc_cidr,
@@ -113,44 +115,120 @@ module Pangea
               lifecycle: { prevent_destroy: true }
             )
 
+            # ── Internet Gateway ────────────────────────────────────
             network.igw = ctx.aws_internet_gateway(
               :"#{name}_igw",
               vpc_id: network.vpc.id,
               tags: tags.merge(Name: "#{name}-igw")
             )
 
-            # Route table for IGW (required for internet access)
-            network.route_table = ctx.aws_route_table(
-              :"#{name}_rt",
+            # ── Public Route Table (IGW → internet) ─────────────────
+            public_rt = ctx.aws_route_table(
+              :"#{name}_public_rt",
               vpc_id: network.vpc.id,
-              tags: tags.merge(Name: "#{name}-rt")
+              tags: tags.merge(Name: "#{name}-public-rt")
             )
+            network.route_table = public_rt
 
-            # Default route to IGW (separate aws_route resource per Terraform schema)
             ctx.aws_route(
-              :"#{name}_default_route",
-              route_table_id: network.route_table.id,
+              :"#{name}_public_default_route",
+              route_table_id: public_rt.id,
               destination_cidr_block: '0.0.0.0/0',
               gateway_id: network.igw.id
             )
 
-            # Subnets in 2 AZs
-            %w[a b].each_with_index do |az_suffix, idx|
+            # ── NAT Gateway (in first public subnet for private tier egress)
+            eip = ctx.aws_eip(
+              :"#{name}_nat_eip",
+              tags: tags.merge(Name: "#{name}-nat-eip")
+            )
+
+            # ── Public Subnets (NLBs, NAT gateways, bastions) ──────
+            # CIDR: 10.0.0.0/24, 10.0.1.0/24
+            %w[a b].each_with_index do |az, idx|
               subnet = ctx.aws_subnet(
-                :"#{name}_subnet_#{az_suffix}",
+                :"#{name}_public_#{az}",
                 vpc_id: network.vpc.id,
                 cidr_block: "10.0.#{idx}.0/24",
-                availability_zone: "#{config.region}#{az_suffix}",
+                availability_zone: "#{config.region}#{az}",
                 map_public_ip_on_launch: true,
-                tags: tags.merge(Name: "#{name}-subnet-#{az_suffix}")
+                tags: tags.merge(Name: "#{name}-public-#{az}")
               )
-              network.add_subnet(:"subnet_#{az_suffix}", subnet)
+              network.add_subnet(:"public_#{az}", subnet, tier: :public)
 
-              # Associate subnet with route table
               ctx.aws_route_table_association(
-                :"#{name}_rta_#{az_suffix}",
+                :"#{name}_public_rta_#{az}",
                 subnet_id: subnet.id,
-                route_table_id: network.route_table.id
+                route_table_id: public_rt.id
+              )
+            end
+
+            # NAT Gateway sits in the first public subnet
+            nat_gw = ctx.aws_nat_gateway(
+              :"#{name}_nat",
+              allocation_id: eip.id,
+              subnet_id: network.public_subnets.first.id,
+              tags: tags.merge(Name: "#{name}-nat")
+            )
+
+            # ── Web Tier Route Table (NAT → internet for egress) ────
+            web_rt = ctx.aws_route_table(
+              :"#{name}_web_rt",
+              vpc_id: network.vpc.id,
+              tags: tags.merge(Name: "#{name}-web-rt")
+            )
+
+            ctx.aws_route(
+              :"#{name}_web_default_route",
+              route_table_id: web_rt.id,
+              destination_cidr_block: '0.0.0.0/0',
+              nat_gateway_id: nat_gw.id
+            )
+
+            # ── Web Tier Subnets (K8s nodes, application workloads) ─
+            # CIDR: 10.0.10.0/24, 10.0.11.0/24
+            %w[a b].each_with_index do |az, idx|
+              subnet = ctx.aws_subnet(
+                :"#{name}_web_#{az}",
+                vpc_id: network.vpc.id,
+                cidr_block: "10.0.#{10 + idx}.0/24",
+                availability_zone: "#{config.region}#{az}",
+                map_public_ip_on_launch: false,
+                tags: tags.merge(Name: "#{name}-web-#{az}")
+              )
+              network.add_subnet(:"web_#{az}", subnet, tier: :web)
+
+              ctx.aws_route_table_association(
+                :"#{name}_web_rta_#{az}",
+                subnet_id: subnet.id,
+                route_table_id: web_rt.id
+              )
+            end
+
+            # ── Data Tier Route Table (no internet egress by default) ─
+            data_rt = ctx.aws_route_table(
+              :"#{name}_data_rt",
+              vpc_id: network.vpc.id,
+              tags: tags.merge(Name: "#{name}-data-rt")
+            )
+
+            # ── Data Tier Subnets (databases, caches, internal) ─────
+            # CIDR: 10.0.20.0/24, 10.0.21.0/24
+            %w[a b].each_with_index do |az, idx|
+              subnet = ctx.aws_subnet(
+                :"#{name}_data_#{az}",
+                vpc_id: network.vpc.id,
+                cidr_block: "10.0.#{20 + idx}.0/24",
+                availability_zone: "#{config.region}#{az}",
+                map_public_ip_on_launch: false,
+                tags: tags.merge(Name: "#{name}-data-#{az}")
+              )
+              network.add_subnet(:"data_#{az}", subnet, tier: :data)
+
+              ctx.aws_route_table_association(
+                :"#{name}_data_rta_#{az}",
+                subnet_id: subnet.id,
+                route_table_id: data_rt.id
               )
             end
 
@@ -566,20 +644,30 @@ module Pangea
 
           private
 
+          # Resolve subnet IDs for K8s nodes — prefer web tier (private), fall back to all subnets.
           def resolve_subnet_ids(config, result)
             if config.network&.subnet_ids&.any?
               config.network.subnet_ids
             elsif result.network
-              # NetworkResult provides .subnet_ids directly
-              if result.network.respond_to?(:subnet_ids)
-                result.network.subnet_ids
-              else
-                # Fallback for raw hash (backward compatibility)
-                result.network.select { |k, _| k.to_s.start_with?('subnet_') }.values.map(&:id)
-              end
+              # Prefer web tier subnets (private, where K8s nodes should run)
+              web = result.network.respond_to?(:web_subnet_ids) ? result.network.web_subnet_ids : []
+              return web if web.any?
+
+              # Fall back to all subnets
+              result.network.respond_to?(:subnet_ids) ? result.network.subnet_ids : []
             else
               []
             end
+          end
+
+          # Resolve public subnet IDs for NLBs — prefer public tier.
+          def resolve_public_subnet_ids(config, result)
+            if result.network
+              pub = result.network.respond_to?(:public_subnet_ids) ? result.network.public_subnet_ids : []
+              return pub if pub.any?
+            end
+            # Fall back to resolve_subnet_ids (all subnets)
+            resolve_subnet_ids(config, result)
           end
 
           # Reject 0.0.0.0/0 for SSH, K8s API, and VPN — these must never be public.
