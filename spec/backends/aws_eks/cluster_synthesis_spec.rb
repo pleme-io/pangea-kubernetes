@@ -142,8 +142,8 @@ RSpec.describe Pangea::Kubernetes::Backends::AwsEks do
       described_class.create_cluster(ctx, :production, cluster_config, arch_result, base_tags)
 
       eks = ctx.find_resource(:aws_eks_cluster, :production_cluster)
-      expect(eks[:attrs][:encryption_config]).to be_an(Array)
-      expect(eks[:attrs][:encryption_config].first[:resources]).to eq(['secrets'])
+      expect(eks[:attrs][:encryption_config]).to be_a(Hash)
+      expect(eks[:attrs][:encryption_config][:resources]).to eq(['secrets'])
     end
   end
 

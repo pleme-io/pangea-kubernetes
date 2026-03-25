@@ -467,7 +467,7 @@ RSpec.describe 'aws_nixos backend type validation' do
           port: 51822,
           protocol: 'UDP',
           vpc_id: result.network.vpc.id,
-          health_check: [{ protocol: 'TCP', port: '22' }],
+          health_check: { protocol: 'TCP', port: '22' },
         })
       }.not_to raise_error
 

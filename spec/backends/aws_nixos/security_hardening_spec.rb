@@ -273,7 +273,7 @@ RSpec.describe 'AwsNixos security hardening' do
     it 'enables versioning on etcd bucket' do
       versioning = ctx.find_resource(:aws_s3_bucket_versioning, :kazoku_etcd_versioning)
       expect(versioning).not_to be_nil
-      expect(versioning[:attrs][:versioning_configuration]).to eq([{ status: 'Enabled' }])
+      expect(versioning[:attrs][:versioning_configuration]).to eq({ status: 'Enabled' })
     end
 
     it 'enables server-side encryption on etcd bucket' do
@@ -312,12 +312,12 @@ RSpec.describe 'AwsNixos security hardening' do
 
     it 'requires IMDSv2 (http_tokens: required) on launch template' do
       lt = ctx.find_resource(:aws_launch_template, :kazoku_cp_lt)
-      expect(lt[:attrs][:metadata_options].first[:http_tokens]).to eq('required')
+      expect(lt[:attrs][:metadata_options][:http_tokens]).to eq('required')
     end
 
     it 'limits IMDS hop count to 1 on launch template' do
       lt = ctx.find_resource(:aws_launch_template, :kazoku_cp_lt)
-      expect(lt[:attrs][:metadata_options].first[:http_put_response_hop_limit]).to eq(1)
+      expect(lt[:attrs][:metadata_options][:http_put_response_hop_limit]).to eq(1)
     end
 
     it 'encrypts volumes via launch template' do

@@ -157,9 +157,9 @@ module Pangea
             cluster_attrs[:enabled_cluster_log_types] = config.logging if config.logging.any?
 
             if config.encryption_at_rest
-              cluster_attrs[:encryption_config] = [{
+              cluster_attrs[:encryption_config] = {
                 resources: ['secrets']
-              }]
+              }
             end
 
             ctx.aws_eks_cluster(:"#{name}_cluster", cluster_attrs)

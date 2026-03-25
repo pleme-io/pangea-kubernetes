@@ -172,7 +172,7 @@ RSpec.describe Pangea::Kubernetes::Backends::AwsNixos do
       described_class.create_cluster(ctx, :production, cluster_config, arch_result, base_tags)
 
       lt = ctx.find_resource(:aws_launch_template, :production_cp_lt)
-      metadata = lt[:attrs][:metadata_options].first
+      metadata = lt[:attrs][:metadata_options]
       expect(metadata[:http_tokens]).to eq('required')
       expect(metadata[:http_put_response_hop_limit]).to eq(1)
     end
@@ -401,7 +401,7 @@ RSpec.describe Pangea::Kubernetes::Backends::AwsNixos do
       described_class.create_node_pool(ctx, :production, cluster_ref, pool_config, base_tags)
 
       lt = ctx.find_resource(:aws_launch_template, :production_workers_lt)
-      metadata = lt[:attrs][:metadata_options].first
+      metadata = lt[:attrs][:metadata_options]
       expect(metadata[:http_tokens]).to eq('required')
     end
 
