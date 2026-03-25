@@ -294,6 +294,7 @@ module Pangea
             network.sg = ctx.aws_security_group(
               :"#{name}_sg",
               description: "Security group for #{name} k8s/k3s NixOS nodes",
+              vpc_id: network.vpc.id,
               tags: tags.merge(Name: "#{name}-sg")
             )
 
