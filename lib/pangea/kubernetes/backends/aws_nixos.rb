@@ -117,7 +117,7 @@ module Pangea
               enable_dns_hostnames: true,
               enable_dns_support: true,
               tags: tags.merge(Name: "#{name}-vpc"),
-              lifecycle: { prevent_destroy: true }
+              lifecycle: { prevent_destroy: false }
             )
 
             # ── Internet Gateway ────────────────────────────────────
