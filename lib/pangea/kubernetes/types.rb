@@ -65,7 +65,7 @@ module Pangea
         attribute :min_size, T::Coercible::Integer.constrained(gteq: 0).default(1)
         attribute :max_size, T::Coercible::Integer.constrained(gteq: 1).default(3)
         attribute :desired_size, T::Coercible::Integer.optional.default(nil)
-        attribute :disk_size_gb, T::Coercible::Integer.constrained(gteq: 10).default(50)
+        attribute :disk_size_gb, T::Coercible::Integer.constrained(gteq: 10).default(20)
         attribute :labels, T::Hash.default({}.freeze)
         attribute :taints, T::Array.of(T::Hash).default([].freeze)
         attribute :max_pods, T::Coercible::Integer.optional.default(nil)
@@ -273,12 +273,12 @@ module Pangea
         attribute :karpenter_enabled, T::Bool.default(false)
 
         # Enable etcd backup S3 bucket creation (AWS only).
-        # Disable for dev clusters where etcd backups are unnecessary.
-        attribute :etcd_backup_enabled, T::Bool.default(true)
+        # Default off for cost savings. Production profiles should enable.
+        attribute :etcd_backup_enabled, T::Bool.default(false)
 
         # Enable S3 versioning on the etcd backup bucket.
-        # Disable for dev/cost savings. Production should keep this on.
-        attribute :etcd_backup_versioning, T::Bool.default(true)
+        # Default off for cost savings. Production should keep this on.
+        attribute :etcd_backup_versioning, T::Bool.default(false)
 
         # ── Load Balancing ─────────────────────────────────────────
         # ALB for HTTP/HTTPS ingress traffic (public → web tier nodes)
@@ -297,7 +297,8 @@ module Pangea
 
         # Restrict node SG HTTP/HTTPS to ALB SG source (not 0.0.0.0/0).
         # Only effective when ingress_alb_enabled is also true.
-        attribute :sg_restrict_http_to_alb, T::Bool.default(false)
+        # Default on — when ALB exists, nodes should only accept traffic from it.
+        attribute :sg_restrict_http_to_alb, T::Bool.default(true)
 
         # Source CIDR for WireGuard VPN NLB ingress (internet-facing).
         # nil = 0.0.0.0/0 (current default). Set to operator IP range for hardening.

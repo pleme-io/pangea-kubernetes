@@ -17,6 +17,7 @@ RSpec.describe Pangea::Kubernetes::Backends::AwsNixos do
       ami_id: 'ami-nixos-test',
       key_pair: 'my-key',
       account_id: '123456789012',
+      etcd_backup_enabled: true,
       etcd_backup_bucket: 'production-etcd-backups',
       ssh_cidr: '10.0.0.0/8',
       api_cidr: '10.0.0.0/8',

@@ -48,9 +48,9 @@ RSpec.describe Pangea::Kubernetes::Types::NodePoolConfig do
       expect(pool.max_size).to eq(3)
     end
 
-    it 'defaults disk_size_gb to 50' do
+    it 'defaults disk_size_gb to 20' do
       pool = described_class.new(minimal_attrs)
-      expect(pool.disk_size_gb).to eq(50)
+      expect(pool.disk_size_gb).to eq(20)
     end
 
     it 'defaults labels to empty hash' do
@@ -89,7 +89,7 @@ RSpec.describe Pangea::Kubernetes::Types::NodePoolConfig do
       expect(hash[:instance_types]).to eq(['t3.large'])
       expect(hash[:min_size]).to eq(1)
       expect(hash[:max_size]).to eq(3)
-      expect(hash[:disk_size_gb]).to eq(50)
+      expect(hash[:disk_size_gb]).to eq(20)
     end
 
     it 'omits empty optional fields' do

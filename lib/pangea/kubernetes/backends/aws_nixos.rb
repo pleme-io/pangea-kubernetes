@@ -1085,7 +1085,13 @@ module Pangea
               Statement: [
                 { Sid: 'AllowKeyAdmin', Effect: 'Allow',
                   Principal: { AWS: "arn:aws:iam::#{account_id}:root" },
-                  Action: 'kms:*', Resource: '*' },
+                  Action: %w[
+                    kms:Create* kms:Describe* kms:Enable* kms:List*
+                    kms:Put* kms:Update* kms:Revoke* kms:Disable*
+                    kms:Get* kms:Delete* kms:TagResource kms:UntagResource
+                    kms:ScheduleKeyDeletion kms:CancelKeyDeletion
+                  ],
+                  Resource: '*' },
                 { Sid: 'AllowCloudWatchLogs', Effect: 'Allow',
                   Principal: { Service: "logs.#{region}.amazonaws.com" },
                   Action: %w[kms:Encrypt kms:Decrypt kms:ReEncrypt* kms:GenerateDataKey* kms:DescribeKey],

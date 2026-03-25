@@ -25,6 +25,8 @@ RSpec.describe 'AwsNixos security hardening' do
       ami_id: 'ami-test',
       key_pair: 'test-key',
       account_id: '123456789012',
+      etcd_backup_enabled: true,
+      etcd_backup_versioning: true,
       etcd_backup_bucket: 'kazoku-etcd-backups',
       ssh_cidr: '10.0.0.0/8',
       api_cidr: '10.0.0.0/8',
@@ -430,10 +432,10 @@ RSpec.describe 'AwsNixos security hardening' do
     end
   end
 
-  describe 'SG ALB restriction (default off)' do
+  describe 'SG ALB restriction (no ALB)' do
     before { network }
 
-    it 'HTTP/HTTPS use 0.0.0.0/0 by default' do
+    it 'HTTP/HTTPS use 0.0.0.0/0 when ALB not enabled' do
       http_rule = ingress_rules.find { |r| r[:attrs][:description] == 'HTTP' }
       https_rule = ingress_rules.find { |r| r[:attrs][:description] == 'HTTPS' }
       expect(http_rule[:attrs][:cidr_blocks]).to eq(['0.0.0.0/0'])
