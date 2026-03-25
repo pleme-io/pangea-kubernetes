@@ -75,7 +75,7 @@ module Pangea
 
             # S3 bucket for etcd backups (optional — disable for dev clusters)
             if config.etcd_backup_enabled
-              etcd_bucket = config.tags[:etcd_backup_bucket] || config.tags['etcd_backup_bucket'] || "#{name}-etcd-backups"
+              etcd_bucket = config.etcd_backup_bucket || "#{name}-etcd-backups"
               network.etcd_bucket = ctx.aws_s3_bucket(
                 :"#{name}_etcd",
                 bucket: etcd_bucket,
@@ -193,14 +193,14 @@ module Pangea
           # ── Phase 2: IAM (least-privilege) ───────────────────────────
           def create_iam(ctx, name, config, tags)
             iam = Architecture::IamResult.new
-            account_id = config.tags[:account_id] || config.tags['account_id']
+            account_id = config.account_id
             if account_id.nil? || account_id == 'CHANGEME'
               raise ArgumentError,
                     "account_id is required for IAM policy scoping. " \
                     "Set ACCOUNT_ID env var or pass account_id in tags."
             end
             region = config.region
-            etcd_bucket = config.tags[:etcd_backup_bucket] || config.tags['etcd_backup_bucket'] || "#{name}-etcd-backups"
+            etcd_bucket = config.etcd_backup_bucket || "#{name}-etcd-backups"
             log_group = "/k3s/#{name}"
 
             # EC2-only assume-role trust policy (JSON String per Terraform schema)
@@ -584,9 +584,9 @@ module Pangea
 
           # Reject 0.0.0.0/0 for SSH, K8s API, and VPN — these must never be public.
           def validate_cidr_restrictions!(config)
-            ssh_cidr = config.tags[:ssh_cidr] || config.tags['ssh_cidr']
-            api_cidr = config.tags[:api_cidr] || config.tags['api_cidr']
-            vpn_cidr = config.tags[:vpn_cidr] || config.tags['vpn_cidr']
+            ssh_cidr = config.ssh_cidr
+            api_cidr = config.api_cidr
+            vpn_cidr = config.vpn_cidr
             if ssh_cidr == '0.0.0.0/0'
               raise ArgumentError, "ssh_cidr must not be 0.0.0.0/0 — SSH must not be public"
             end
@@ -604,9 +604,9 @@ module Pangea
           # Security group rules — private ports restricted to VPC CIDR,
           # SSH restricted to VPC, only HTTP/HTTPS public for ingress.
           def aws_security_group_rules(config, vpc_cidr)
-            ssh_cidr = config.tags[:ssh_cidr] || config.tags['ssh_cidr'] || vpc_cidr
-            api_cidr = config.tags[:api_cidr] || config.tags['api_cidr'] || vpc_cidr
-            vpn_cidr = config.tags[:vpn_cidr] || config.tags['vpn_cidr']
+            ssh_cidr = config.ssh_cidr || vpc_cidr
+            api_cidr = config.api_cidr || vpc_cidr
+            vpn_cidr = config.vpn_cidr
 
             rules = base_firewall_ports(config.distribution).map do |port_name, port_def|
               cidr = case port_name

@@ -286,6 +286,25 @@ module Pangea
         # VPN configuration (WireGuard links for operator access)
         attribute :vpn, VpnConfig.optional.default(nil)
 
+        # ── Infrastructure parameters (NOT tags — typed config fields) ──
+        # These were previously smuggled through the tags hash.
+        # Now they're proper typed attributes that don't pollute resource tags.
+
+        # AWS account ID for IAM policy scoping (12-digit string)
+        attribute :account_id, T::String.optional.default(nil)
+
+        # S3 bucket name for etcd backups (when etcd_backup_enabled)
+        attribute :etcd_backup_bucket, T::String.optional.default(nil)
+
+        # CIDR for SSH access restriction (e.g., '10.0.0.0/8')
+        attribute :ssh_cidr, T::String.default('10.0.0.0/8')
+
+        # CIDR for K8s API access restriction
+        attribute :api_cidr, T::String.default('10.0.0.0/8')
+
+        # VPN CIDR for WireGuard tunnel (e.g., '10.100.3.0/24')
+        attribute :vpn_cidr, T::String.optional.default(nil)
+
         # AWS-specific (managed EKS or NixOS EC2)
         attribute :role_arn, T::String.optional.default(nil)
         attribute :ami_id, T::String.optional.default(nil)
