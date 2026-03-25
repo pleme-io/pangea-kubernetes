@@ -16,17 +16,15 @@ RSpec.describe Pangea::Kubernetes::Backends::AwsNixos do
       distribution_track: '1.34',
       ami_id: 'ami-nixos-test',
       key_pair: 'my-key',
+      account_id: '123456789012',
+      etcd_backup_bucket: 'production-etcd-backups',
+      ssh_cidr: '10.0.0.0/8',
+      api_cidr: '10.0.0.0/8',
       node_pools: [
         { name: :system, instance_types: ['t3.large'], min_size: 3, max_size: 3 },
         { name: :workers, instance_types: ['c5.xlarge'], min_size: 2, max_size: 20 }
       ],
       network: { vpc_cidr: '10.0.0.0/16' },
-      tags: {
-        account_id: '123456789012',
-        etcd_backup_bucket: 'production-etcd-backups',
-        ssh_cidr: '10.0.0.0/8',
-        api_cidr: '10.0.0.0/8',
-      }
     )
   end
 
@@ -45,8 +43,9 @@ RSpec.describe Pangea::Kubernetes::Backends::AwsNixos do
       expect(result).to have_key(:vpc)
       expect(result).to have_key(:igw)
       expect(result).to have_key(:route_table)
-      expect(result).to have_key(:subnet_a)
-      expect(result).to have_key(:subnet_b)
+      expect(result).to have_key(:public_a)
+      expect(result).to have_key(:web_a)
+      expect(result).to have_key(:data_a)
       expect(result).to have_key(:sg)
     end
 
@@ -59,7 +58,7 @@ RSpec.describe Pangea::Kubernetes::Backends::AwsNixos do
 
     it 'creates a default route via aws_route resource' do
       described_class.create_network(ctx, :production, cluster_config, base_tags)
-      route = ctx.find_resource(:aws_route, :production_default_route)
+      route = ctx.find_resource(:aws_route, :production_public_default_route)
       expect(route).not_to be_nil
       expect(route[:attrs][:destination_cidr_block]).to eq('0.0.0.0/0')
     end
@@ -247,7 +246,7 @@ RSpec.describe Pangea::Kubernetes::Backends::AwsNixos do
         distribution: :kubernetes, profile: 'calico-standard',
         node_pools: [{ name: :system, instance_types: ['t3.large'] }],
         network: { vpc_cidr: '10.0.0.0/16' },
-        tags: { account_id: '123456789012' }
+        account_id: '123456789012'
       )
 
       result = Pangea::Kubernetes::Architecture::ArchitectureResult.new(:test, k8s_config)
@@ -273,7 +272,7 @@ RSpec.describe Pangea::Kubernetes::Backends::AwsNixos do
             { name: :system, instance_types: ['t3.small'], min_size: 0, max_size: 1 },
           ],
           network: { vpc_cidr: '10.0.0.0/16' },
-          tags: { account_id: '123456789012', etcd_backup_bucket: 'test-etcd' }
+          account_id: '123456789012', etcd_backup_bucket: 'test-etcd'
         )
       end
       let(:parked_arch) do
@@ -305,7 +304,7 @@ RSpec.describe Pangea::Kubernetes::Backends::AwsNixos do
           ami_id: 'ami-nixos-test', key_pair: 'my-key', karpenter_enabled: true,
           node_pools: [{ name: :system, instance_types: ['t3.small'], min_size: 1, max_size: 1 }],
           network: { vpc_cidr: '10.0.0.0/16' },
-          tags: { account_id: '123456789012', etcd_backup_bucket: 'test-etcd' }
+          account_id: '123456789012', etcd_backup_bucket: 'test-etcd'
         )
       end
 
@@ -334,7 +333,7 @@ RSpec.describe Pangea::Kubernetes::Backends::AwsNixos do
           argocd: { repo_url: 'ssh://git@github.com/pleme-io/akeyless-k8s', path: './clusters/kazoku' },
           node_pools: [{ name: :system, instance_types: ['t3.small'], min_size: 1, max_size: 1 }],
           network: { vpc_cidr: '10.0.0.0/16' },
-          tags: { account_id: '123456789012', etcd_backup_bucket: 'test-etcd' }
+          account_id: '123456789012', etcd_backup_bucket: 'test-etcd'
         )
       end
       let(:argocd_arch) do

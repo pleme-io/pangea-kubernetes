@@ -115,13 +115,20 @@ module Pangea
       # AWS-specific NetworkResult — extends the base contract with AWS fields.
       # is_a?(Pangea::Contracts::NetworkResult) returns true.
       class NetworkResult < Pangea::Contracts::NetworkResult
-        attr_accessor :igw, :route_table, :etcd_bucket
+        attr_accessor :igw, :route_table, :etcd_bucket,
+                      :flow_log, :flow_log_role,
+                      :ssm_logs_bucket,
+                      :kms_key
 
         def initialize
           super
           @igw = nil
           @route_table = nil
           @etcd_bucket = nil
+          @flow_log = nil
+          @flow_log_role = nil
+          @ssm_logs_bucket = nil
+          @kms_key = nil
         end
 
         def [](key)
@@ -129,6 +136,10 @@ module Pangea
           when :igw then igw
           when :route_table then route_table
           when :etcd_bucket then etcd_bucket
+          when :flow_log then flow_log
+          when :flow_log_role then flow_log_role
+          when :ssm_logs_bucket then ssm_logs_bucket
+          when :kms_key then kms_key
           else super
           end
         end
@@ -138,6 +149,10 @@ module Pangea
           hash[:igw] = igw if igw
           hash[:route_table] = route_table if route_table
           hash[:etcd_bucket] = etcd_bucket if etcd_bucket
+          hash[:flow_log] = flow_log if flow_log
+          hash[:flow_log_role] = flow_log_role if flow_log_role
+          hash[:ssm_logs_bucket] = ssm_logs_bucket if ssm_logs_bucket
+          hash[:kms_key] = kms_key if kms_key
           hash
         end
       end

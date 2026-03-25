@@ -115,11 +115,17 @@ module Pangea
 
         # Build cloud-init for a worker/agent node.
         def build_agent_cloud_init(name, tags, cluster_ref)
+          track = if cluster_ref.respond_to?(:distribution_track) && cluster_ref.distribution_track
+                    cluster_ref.distribution_track
+                  else
+                    tags[:DistributionTrack] || '1.34'
+                  end
+
           BareMetal::CloudInit.generate(
             cluster_name: name.to_s,
             distribution: tags[:Distribution]&.to_sym || :k3s,
             profile: tags[:Profile] || 'cilium-standard',
-            distribution_track: tags[:DistributionTrack] || '1.34',
+            distribution_track: track,
             role: 'agent',
             node_index: 0,
             cluster_init: false,

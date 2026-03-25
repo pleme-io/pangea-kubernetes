@@ -293,6 +293,44 @@ module Pangea
 
         # Internal K8s API NLB is always created (required for worker join)
 
+        # ── Security Hardening ────────────────────────────────────────
+
+        # Restrict node SG HTTP/HTTPS to ALB SG source (not 0.0.0.0/0).
+        # Only effective when ingress_alb_enabled is also true.
+        attribute :sg_restrict_http_to_alb, T::Bool.default(false)
+
+        # Source CIDR for WireGuard VPN NLB ingress (internet-facing).
+        # nil = 0.0.0.0/0 (current default). Set to operator IP range for hardening.
+        attribute :vpn_source_cidr, T::String.optional.default(nil)
+
+        # Enable VPC flow logs for network traffic auditing.
+        attribute :flow_logs_enabled, T::Bool.default(false)
+        attribute :flow_logs_traffic_type, T::String.constrained(
+          included_in: %w[ALL ACCEPT REJECT]
+        ).default('ALL')
+        attribute :flow_logs_retention_days, (T::Coercible::Integer | T::Coercible::Float).default(30)
+
+        # Enable KMS encryption for CloudWatch log groups.
+        # When true + kms_key_arn nil → creates a new KMS key with rotation.
+        attribute :kms_logs_enabled, T::Bool.default(false)
+        attribute :kms_key_arn, T::String.optional.default(nil)
+
+        # Create one NAT gateway per AZ (HA). false = single NAT in public-a.
+        attribute :nat_per_az, T::Bool.default(false)
+
+        # SSM-only access: no SSH key pair, no port 22 SG rule.
+        attribute :ssm_only, T::Bool.default(false)
+
+        # Separate S3 bucket for SSM session logs (nil = reuse etcd backup bucket).
+        attribute :ssm_logs_bucket, T::String.optional.default(nil)
+
+        # VPN target group health check (default: match vpn_nlb_port, not SSH 22).
+        attribute :vpn_health_check_port, (T::Coercible::Integer | T::Coercible::Float).optional.default(nil)
+
+        # ACM certificate domain for ALB HTTPS (creates cert when set + no certificate_arn).
+        attribute :ingress_alb_domain, T::String.optional.default(nil)
+        attribute :ingress_alb_zone_id, T::String.optional.default(nil)
+
         # NixOS configuration (NixOS backends only)
         attribute :nixos, NixOSConfig.optional.default(nil)
 

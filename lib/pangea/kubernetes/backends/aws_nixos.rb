@@ -40,8 +40,10 @@ module Pangea
           :nlb, :asg, :lt, :tg, :listener, :asg_tg,
           :subnet_ids, :sg_id, :instance_profile_name, :ami_id, :key_name,
           :ingress_alb, :ingress_alb_tg, :ingress_alb_https_listener, :ingress_alb_http_listener,
+          :ingress_alb_sg,
           :vpn_nlb, :vpn_nlb_tg, :vpn_nlb_listener,
           :public_subnet_ids,
+          :distribution_track,
           keyword_init: true
         ) do
           def ipv4_address
@@ -180,34 +182,8 @@ module Pangea
               )
             end
 
-            # ── NAT Gateway (in public-a for private tier egress) ───
-            eip = ctx.aws_eip(
-              :"#{name}_nat_eip",
-              tags: tags.merge(Name: "#{name}-nat-eip")
-            )
-
-            nat_gw = ctx.aws_nat_gateway(
-              :"#{name}_nat",
-              allocation_id: eip.id,
-              subnet_id: network.public_subnets.first.id,
-              tags: tags.merge(Name: "#{name}-nat")
-            )
-
-            # ── Web Tier Route Table (egress via NAT) ───────────────
-            web_rt = ctx.aws_route_table(
-              :"#{name}_web_rt",
-              vpc_id: network.vpc.id,
-              tags: tags.merge(Name: "#{name}-web-rt")
-            )
-
-            ctx.aws_route(
-              :"#{name}_web_default_route",
-              route_table_id: web_rt.id,
-              destination_cidr_block: '0.0.0.0/0',
-              nat_gateway_id: nat_gw.id
-            )
-
-            # ── Web Subnets ─────────────────────────────────────────
+            # ── Web Subnets (created before NAT so we can associate per-AZ) ─
+            web_subnets = []
             azs.each_with_index do |az, idx|
               subnet = ctx.aws_subnet(
                 :"#{name}_web_#{az}",
@@ -218,12 +194,74 @@ module Pangea
                 tags: tags.merge(Name: "#{name}-web-#{az}", Tier: 'web')
               )
               network.add_subnet(:"web_#{az}", subnet, tier: :web)
+              web_subnets << subnet
+            end
 
-              ctx.aws_route_table_association(
-                :"#{name}_web_rta_#{az}",
-                subnet_id: subnet.id,
-                route_table_id: web_rt.id
+            if config.nat_per_az
+              # ── Per-AZ NAT Gateways (HA) ────────────────────────────
+              azs.each_with_index do |az, idx|
+                eip = ctx.aws_eip(
+                  :"#{name}_nat_eip_#{az}",
+                  tags: tags.merge(Name: "#{name}-nat-eip-#{az}")
+                )
+                nat = ctx.aws_nat_gateway(
+                  :"#{name}_nat_#{az}",
+                  subnet_id: network.public_subnets[idx].id,
+                  allocation_id: eip.id,
+                  tags: tags.merge(Name: "#{name}-nat-#{az}")
+                )
+                web_rt = ctx.aws_route_table(
+                  :"#{name}_web_rt_#{az}",
+                  vpc_id: network.vpc.id,
+                  tags: tags.merge(Name: "#{name}-web-rt-#{az}")
+                )
+                ctx.aws_route(
+                  :"#{name}_web_default_route_#{az}",
+                  route_table_id: web_rt.id,
+                  destination_cidr_block: '0.0.0.0/0',
+                  nat_gateway_id: nat.id
+                )
+                ctx.aws_route_table_association(
+                  :"#{name}_web_rta_#{az}",
+                  subnet_id: web_subnets[idx].id,
+                  route_table_id: web_rt.id
+                )
+              end
+            else
+              # ── Single NAT Gateway (in public-a) ────────────────────
+              eip = ctx.aws_eip(
+                :"#{name}_nat_eip",
+                tags: tags.merge(Name: "#{name}-nat-eip")
               )
+
+              nat_gw = ctx.aws_nat_gateway(
+                :"#{name}_nat",
+                allocation_id: eip.id,
+                subnet_id: network.public_subnets.first.id,
+                tags: tags.merge(Name: "#{name}-nat")
+              )
+
+              web_rt = ctx.aws_route_table(
+                :"#{name}_web_rt",
+                vpc_id: network.vpc.id,
+                tags: tags.merge(Name: "#{name}-web-rt")
+              )
+
+              ctx.aws_route(
+                :"#{name}_web_default_route",
+                route_table_id: web_rt.id,
+                destination_cidr_block: '0.0.0.0/0',
+                nat_gateway_id: nat_gw.id
+              )
+
+              web_subnets.each_with_index do |subnet, idx|
+                az = azs[idx]
+                ctx.aws_route_table_association(
+                  :"#{name}_web_rta_#{az}",
+                  subnet_id: subnet.id,
+                  route_table_id: web_rt.id
+                )
+              end
             end
 
             # ── Data Tier Route Table (no internet, VPC-local only) ─
@@ -284,6 +322,57 @@ module Pangea
               protocol: '-1',
               cidr_blocks: ['0.0.0.0/0']
             )
+
+            # ── VPC Flow Logs (optional — network traffic auditing) ───
+            if config.flow_logs_enabled
+              flow_trust = JSON.generate({
+                Version: '2012-10-17',
+                Statement: [{ Effect: 'Allow',
+                  Principal: { Service: 'vpc-flow-logs.amazonaws.com' },
+                  Action: 'sts:AssumeRole' }]
+              })
+              flow_role = ctx.aws_iam_role(:"#{name}_flow_log_role",
+                assume_role_policy: flow_trust,
+                tags: tags.merge(Name: "#{name}-flow-log-role"))
+
+              flow_policy = ctx.aws_iam_policy(:"#{name}_flow_log_policy",
+                policy: JSON.generate({ Version: '2012-10-17',
+                  Statement: [{ Effect: 'Allow',
+                    Action: %w[logs:CreateLogGroup logs:CreateLogStream logs:PutLogEvents
+                                logs:DescribeLogGroups logs:DescribeLogStreams],
+                    Resource: ["arn:aws:logs:#{config.region}:#{config.account_id}:log-group:/vpc/#{name}*"] }]
+                }), tags: tags)
+
+              ctx.aws_iam_role_policy_attachment(:"#{name}_flow_log_attach",
+                role: flow_role.name, policy_arn: flow_policy.arn)
+
+              flow_log_group = ctx.aws_cloudwatch_log_group(:"#{name}_flow_logs",
+                retention_in_days: config.flow_logs_retention_days,
+                tags: tags.merge(Name: "#{name}-flow-logs"))
+
+              network.flow_log = ctx.aws_flow_log(:"#{name}_vpc_flow_log",
+                vpc_id: network.vpc.id,
+                traffic_type: config.flow_logs_traffic_type,
+                log_destination_type: 'cloud-watch-logs',
+                log_group_name: flow_log_group.name,
+                iam_role_arn: flow_role.arn,
+                tags: tags.merge(Name: "#{name}-vpc-flow-log"))
+              network.flow_log_role = flow_role
+            end
+
+            # ── SSM Logs Bucket (optional — separate from etcd) ───────
+            if config.ssm_logs_bucket
+              network.ssm_logs_bucket = ctx.aws_s3_bucket(:"#{name}_ssm_logs",
+                bucket: config.ssm_logs_bucket,
+                tags: tags.merge(Name: config.ssm_logs_bucket))
+              ctx.aws_s3_bucket_server_side_encryption_configuration(:"#{name}_ssm_logs_sse",
+                bucket: network.ssm_logs_bucket.id,
+                rule: [{ apply_server_side_encryption_by_default: { sse_algorithm: 'AES256' } }])
+              ctx.aws_s3_bucket_public_access_block(:"#{name}_ssm_logs_pab",
+                bucket: network.ssm_logs_bucket.id,
+                block_public_acls: true, block_public_policy: true,
+                ignore_public_acls: true, restrict_public_buckets: true)
+            end
 
             network
           end
@@ -423,6 +512,7 @@ module Pangea
                                               role: iam.role.ref(:name), policy_arn: iam.ec2_policy.ref(:arn))
 
             # ── Policy: SSM Session Manager ──────────────────────────
+            ssm_bucket = config.ssm_logs_bucket || etcd_bucket
             iam.ssm_policy = ctx.aws_iam_policy(
               :"#{name}_ssm",
               description: "SSM session access for #{name} K3s nodes",
@@ -443,7 +533,7 @@ module Pangea
                   Sid: 'SSMSessionLogs',
                   Effect: 'Allow',
                   Action: ['s3:PutObject'],
-                  Resource: ["arn:aws:s3:::#{etcd_bucket}/ssm-logs/*"],
+                  Resource: ["arn:aws:s3:::#{ssm_bucket}/ssm-logs/*"],
                 }],
               }),
               tags: tags,
@@ -451,11 +541,33 @@ module Pangea
             ctx.aws_iam_role_policy_attachment(:"#{name}_ssm",
                                               role: iam.role.ref(:name), policy_arn: iam.ssm_policy.ref(:arn))
 
+            # ── KMS Key for CloudWatch Logs (optional) ─────────────────
+            kms_key_id = nil
+            if config.kms_logs_enabled
+              if config.kms_key_arn
+                kms_key_id = config.kms_key_arn
+              else
+                kms_key = ctx.aws_kms_key(:"#{name}_logs_kms",
+                  description: "KMS key for #{name} CloudWatch logs",
+                  enable_key_rotation: true,
+                  policy: kms_cloudwatch_policy(account_id, config.region),
+                  tags: tags.merge(Name: "#{name}-logs-kms"))
+                ctx.aws_kms_alias(:"#{name}_logs_kms_alias",
+                  name: "alias/#{name}-logs", target_key_id: kms_key.id)
+                kms_key_id = kms_key.arn
+              end
+            end
+
             # ── CloudWatch Log Group ─────────────────────────────────
-            iam.log_group = ctx.aws_cloudwatch_log_group(
-              :"#{name}_logs",
+            log_group_attrs = {
               retention_in_days: 30,
               tags: tags.merge(Name: "#{name}-logs")
+            }
+            log_group_attrs[:kms_key_id] = kms_key_id if kms_key_id
+
+            iam.log_group = ctx.aws_cloudwatch_log_group(
+              :"#{name}_logs",
+              **log_group_attrs
             )
 
             # ── Karpenter IRSA role (opt-in, deployed post-cluster via GitOps)
@@ -499,11 +611,10 @@ module Pangea
 
             cloud_init = build_server_cloud_init(name, config, 0, result)
 
-            lt = ctx.aws_launch_template(
-              :"#{name}_cp_lt",
+            effective_key_name = config.ssm_only ? nil : key_name
+            cp_lt_attrs = {
               image_id: ami_id,
               instance_type: instance_type,
-              key_name: key_name,
               user_data: cloud_init,
               iam_instance_profile: instance_profile_name ? { name: instance_profile_name } : nil,
               vpc_security_group_ids: sg_id ? [sg_id] : [],
@@ -530,13 +641,15 @@ module Pangea
                 )
               }],
               tags: tags.merge(Name: "#{name}-cp-lt")
-            )
+            }
+            cp_lt_attrs[:key_name] = effective_key_name if effective_key_name
+
+            lt = ctx.aws_launch_template(:"#{name}_cp_lt", **cp_lt_attrs)
 
             # min_size=0 allows parked mode (all instances off, infra preserved)
             cp_desired = system_pool.min_size || 1
             max_cp = system_pool.max_size || [cp_desired, 1].max
-            asg = ctx.aws_autoscaling_group(
-              :"#{name}_cp_asg",
+            cp_asg_attrs = {
               min_size: cp_desired,
               max_size: [max_cp, cp_desired].max,
               launch_template: { id: lt.id, version: '$Latest' },
@@ -546,7 +659,10 @@ module Pangea
                 { key: 'KubernetesCluster', value: name.to_s, propagate_at_launch: true },
                 { key: 'Role', value: 'control-plane', propagate_at_launch: true }
               ]
-            )
+            }
+            cp_asg_attrs[:desired_capacity] = system_pool.desired_size if system_pool.desired_size
+
+            asg = ctx.aws_autoscaling_group(:"#{name}_cp_asg", **cp_asg_attrs)
 
             nlb = ctx.aws_lb(
               :"#{name}_cp_nlb",
@@ -593,7 +709,22 @@ module Pangea
             ingress_alb_tg = nil
             ingress_alb_https_listener = nil
             ingress_alb_http_listener = nil
+            alb_sg = nil
             public_subnet_ids = resolve_public_subnet_ids(config, result)
+
+            # ── ACM Certificate (optional — auto-create for ALB HTTPS) ─
+            effective_cert_arn = config.ingress_alb_certificate_arn
+            if config.ingress_alb_enabled && config.ingress_alb_domain && !effective_cert_arn
+              acm_cert = ctx.aws_acm_certificate(:"#{name}_ingress_cert",
+                domain_name: config.ingress_alb_domain,
+                validation_method: 'DNS',
+                tags: tags.merge(Name: "#{name}-ingress-cert"))
+              if config.ingress_alb_zone_id
+                ctx.aws_acm_certificate_validation(:"#{name}_ingress_cert_validation",
+                  certificate_arn: acm_cert.arn)
+              end
+              effective_cert_arn = acm_cert.arn
+            end
 
             if config.ingress_alb_enabled
               # ALB security group — allows 80/443 from internet
@@ -658,20 +789,20 @@ module Pangea
               )
 
               # HTTPS listener (TLS termination at ALB)
-              if config.ingress_alb_certificate_arn
+              if effective_cert_arn
                 ingress_alb_https_listener = ctx.aws_lb_listener(
                   :"#{name}_ingress_https",
                   load_balancer_arn: ingress_alb.arn,
                   port: 443,
                   protocol: 'HTTPS',
                   ssl_policy: 'ELBSecurityPolicy-TLS13-1-2-2021-06',
-                  certificate_arn: config.ingress_alb_certificate_arn,
+                  certificate_arn: effective_cert_arn,
                   default_action: [{ type: 'forward', target_group_arn: ingress_alb_tg.arn }]
                 )
               end
 
               # HTTP listener (redirect to HTTPS or forward)
-              if config.ingress_alb_http_redirect && config.ingress_alb_certificate_arn
+              if config.ingress_alb_http_redirect && effective_cert_arn
                 ingress_alb_http_listener = ctx.aws_lb_listener(
                   :"#{name}_ingress_http",
                   load_balancer_arn: ingress_alb.arn,
@@ -693,6 +824,20 @@ module Pangea
               end
 
               # Attach worker ASG to ingress target group (done in create_node_pool)
+
+              # SG-to-SG rules for HTTP/HTTPS when restricted to ALB
+              if config.sg_restrict_http_to_alb
+                ctx.aws_security_group_rule(:"#{name}_sg_http_from_alb",
+                  type: 'ingress', from_port: 80, to_port: 80, protocol: 'tcp',
+                  source_security_group_id: alb_sg.id,
+                  security_group_id: result.network.sg.id,
+                  description: 'HTTP from ALB only')
+                ctx.aws_security_group_rule(:"#{name}_sg_https_from_alb",
+                  type: 'ingress', from_port: 443, to_port: 443, protocol: 'tcp',
+                  source_security_group_id: alb_sg.id,
+                  security_group_id: result.network.sg.id,
+                  description: 'HTTPS from ALB only')
+              end
             end
 
             # ── VPN NLB (optional — WireGuard operator access) ──────
@@ -712,6 +857,7 @@ module Pangea
                 tags: tags.merge(Name: "#{name}-vpn-nlb")
               )
 
+              health_port = (config.vpn_health_check_port || vpn_port).to_s
               vpn_nlb_tg = ctx.aws_lb_target_group(
                 :"#{name}_vpn_tg",
                 name: "#{name}-vpn-wg",
@@ -721,7 +867,7 @@ module Pangea
                 target_type: 'instance',
                 health_check: {
                   protocol: 'TCP',
-                  port: '22',
+                  port: health_port,
                   healthy_threshold: 3,
                   unhealthy_threshold: 3,
                   interval: 30,
@@ -745,10 +891,11 @@ module Pangea
               )
 
               # Security group rule for VPN ingress
+              vpn_source = config.vpn_source_cidr || '0.0.0.0/0'
               ctx.aws_security_group_rule(
                 :"#{name}_sg_vpn_ingress",
                 type: 'ingress', from_port: vpn_port, to_port: vpn_port, protocol: 'udp',
-                cidr_blocks: ['0.0.0.0/0'],
+                cidr_blocks: [vpn_source],
                 security_group_id: sg_id,
                 description: 'WireGuard VPN (internet-facing NLB)'
               )
@@ -759,13 +906,15 @@ module Pangea
               listener: listener, asg_tg: asg_tg,
               subnet_ids: subnet_ids, sg_id: sg_id,
               instance_profile_name: instance_profile_name,
-              ami_id: ami_id, key_name: key_name,
+              ami_id: ami_id, key_name: effective_key_name,
               ingress_alb: ingress_alb, ingress_alb_tg: ingress_alb_tg,
               ingress_alb_https_listener: ingress_alb_https_listener,
               ingress_alb_http_listener: ingress_alb_http_listener,
+              ingress_alb_sg: config.ingress_alb_enabled ? alb_sg : nil,
               vpn_nlb: vpn_nlb, vpn_nlb_tg: vpn_nlb_tg,
               vpn_nlb_listener: vpn_nlb_listener,
-              public_subnet_ids: public_subnet_ids
+              public_subnet_ids: public_subnet_ids,
+              distribution_track: config.distribution_track || config.kubernetes_version
             )
           end
 
@@ -787,11 +936,9 @@ module Pangea
             sg_id = cluster_ref.respond_to?(:sg_id) ? cluster_ref.sg_id : nil
             instance_profile_name = cluster_ref.respond_to?(:instance_profile_name) ? cluster_ref.instance_profile_name : nil
 
-            lt = ctx.aws_launch_template(
-              :"#{pool_name}_lt",
+            worker_lt_attrs = {
               image_id: ami_id,
               instance_type: instance_type,
-              key_name: key_name,
               user_data: cloud_init,
               iam_instance_profile: instance_profile_name ? { name: instance_profile_name } : nil,
               vpc_security_group_ids: sg_id ? [sg_id] : [],
@@ -818,10 +965,12 @@ module Pangea
                 )
               }],
               tags: tags.merge(Name: "#{name}-#{pool_config.name}-lt")
-            )
+            }
+            worker_lt_attrs[:key_name] = key_name if key_name
 
-            ctx.aws_autoscaling_group(
-              :"#{pool_name}_asg",
+            lt = ctx.aws_launch_template(:"#{pool_name}_lt", **worker_lt_attrs)
+
+            worker_asg_attrs = {
               min_size: pool_config.min_size,
               max_size: pool_config.max_size,
               launch_template: { id: lt.id, version: '$Latest' },
@@ -831,7 +980,19 @@ module Pangea
                 { key: 'KubernetesCluster', value: name.to_s, propagate_at_launch: true },
                 { key: 'NodePool', value: pool_config.name.to_s, propagate_at_launch: true }
               ]
-            )
+            }
+            worker_asg_attrs[:desired_capacity] = pool_config.desired_size if pool_config.desired_size
+
+            worker_asg = ctx.aws_autoscaling_group(:"#{pool_name}_asg", **worker_asg_attrs)
+
+            # Attach workers to ingress ALB target group when present
+            if cluster_ref.respond_to?(:ingress_alb_tg) && cluster_ref.ingress_alb_tg
+              ctx.aws_autoscaling_attachment(:"#{pool_name}_ingress_tg",
+                autoscaling_group_name: worker_asg.id,
+                lb_target_group_arn: cluster_ref.ingress_alb_tg.arn)
+            end
+
+            worker_asg
           end
 
           private
@@ -888,11 +1049,17 @@ module Pangea
             api_cidr = config.api_cidr || vpc_cidr
             vpn_cidr = config.vpn_cidr
 
-            rules = base_firewall_ports(config.distribution).map do |port_name, port_def|
+            rules = base_firewall_ports(config.distribution).filter_map do |port_name, port_def|
               cidr = case port_name
-                     when :ssh then [ssh_cidr]
+                     when :ssh
+                       next nil if config.ssm_only
+                       [ssh_cidr]
                      when :api then [api_cidr]
-                     when :http, :https then ['0.0.0.0/0']
+                     when :http, :https
+                       if config.sg_restrict_http_to_alb && config.ingress_alb_enabled
+                         next nil # SG-source rules added in create_cluster
+                       end
+                       ['0.0.0.0/0']
                      when :wireguard then vpn_cidr ? [vpn_cidr] : [vpc_cidr]
                      else [vpc_cidr]
                      end
@@ -910,6 +1077,21 @@ module Pangea
             rules.reject! { |r| r[:description] == 'WireGuard VPN' } unless vpn_cidr || config.vpn
 
             rules
+          end
+
+          def kms_cloudwatch_policy(account_id, region)
+            JSON.generate({
+              Version: '2012-10-17',
+              Statement: [
+                { Sid: 'AllowKeyAdmin', Effect: 'Allow',
+                  Principal: { AWS: "arn:aws:iam::#{account_id}:root" },
+                  Action: 'kms:*', Resource: '*' },
+                { Sid: 'AllowCloudWatchLogs', Effect: 'Allow',
+                  Principal: { Service: "logs.#{region}.amazonaws.com" },
+                  Action: %w[kms:Encrypt kms:Decrypt kms:ReEncrypt* kms:GenerateDataKey* kms:DescribeKey],
+                  Resource: '*' }
+              ]
+            })
           end
 
           def port_range_start(port)

@@ -59,7 +59,7 @@ RSpec.describe 'AWS NixOS kubernetes distribution' do
         node_pools: [{ name: :system, instance_types: ['t3.large'], min_size: 1, max_size: 1 }],
         network: { vpc_cidr: '10.0.0.0/16' },
         nixos: { image_id: 'ami-nixos-from-config' },
-        tags: { account_id: '123456789012' }
+        account_id: '123456789012'
       )
 
       arch_result = Pangea::Kubernetes::Architecture::ArchitectureResult.new(:test, config)
@@ -80,7 +80,7 @@ RSpec.describe 'AWS NixOS kubernetes distribution' do
         profile: 'cilium-standard',
         node_pools: [{ name: :system, instance_types: ['t3.large'], min_size: 1, max_size: 1 }],
         network: { vpc_cidr: '10.0.0.0/16' },
-        tags: { account_id: '123456789012' }
+        account_id: '123456789012'
       )
 
       arch_result = Pangea::Kubernetes::Architecture::ArchitectureResult.new(:test, config)
