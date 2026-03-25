@@ -328,6 +328,10 @@ module Pangea
         # VPN target group health check (default: match vpn_nlb_port, not SSH 22).
         attribute :vpn_health_check_port, (T::Coercible::Integer | T::Coercible::Float).optional.default(nil)
 
+        # Source CIDR for all internet-facing ingress (ALB, node HTTP/HTTPS).
+        # nil = 0.0.0.0/0 (open). Set to operator IP/32 to lock down the entire perimeter.
+        attribute :ingress_source_cidr, T::String.optional.default(nil)
+
         # ACM certificate domain for ALB HTTPS (creates cert when set + no certificate_arn).
         attribute :ingress_alb_domain, T::String.optional.default(nil)
         attribute :ingress_alb_zone_id, T::String.optional.default(nil)

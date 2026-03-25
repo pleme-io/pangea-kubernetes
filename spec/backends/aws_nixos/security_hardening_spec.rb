@@ -934,4 +934,93 @@ RSpec.describe 'AwsNixos security hardening' do
       expect(asg[:attrs][:desired_capacity]).to eq(2)
     end
   end
+
+  # ── Ingress Source CIDR (perimeter lockdown) ───────────────────
+
+  describe 'ingress_source_cidr lockdown' do
+    let(:locked_config) do
+      Pangea::Kubernetes::Types::ClusterConfig.new(
+        backend: :aws_nixos, kubernetes_version: '1.29', region: 'us-east-1',
+        distribution: :k3s, profile: 'cilium-standard',
+        ami_id: 'ami-test', key_pair: 'test-key', account_id: '123456789012',
+        node_pools: [{ name: :system, instance_types: ['t3.medium'], min_size: 1, max_size: 1 }],
+        network: { vpc_cidr: '10.0.0.0/16' },
+        ingress_source_cidr: '24.158.175.41/32',
+        ingress_alb_enabled: true,
+        vpn_nlb_enabled: true,
+      )
+    end
+    let(:lk_ctx) { create_mock_context }
+    let(:lk_network) { Pangea::Kubernetes::Backends::AwsNixos.create_network(lk_ctx, :test, locked_config, base_tags) }
+    let(:lk_iam) { Pangea::Kubernetes::Backends::AwsNixos.create_iam(lk_ctx, :test, locked_config, base_tags) }
+    let(:lk_result) do
+      r = Pangea::Kubernetes::Architecture::ArchitectureResult.new(:test, locked_config)
+      r.network = lk_network
+      r.iam = lk_iam
+      r
+    end
+
+    before do
+      Pangea::Kubernetes::Backends::AwsNixos.create_cluster(lk_ctx, :test, locked_config, lk_result, base_tags)
+    end
+
+    it 'ALB SG HTTPS uses operator CIDR, not 0.0.0.0/0' do
+      rule = lk_ctx.find_resource(:aws_security_group_rule, :test_alb_sg_https)
+      expect(rule[:attrs][:cidr_blocks]).to eq(['24.158.175.41/32'])
+    end
+
+    it 'ALB SG HTTP uses operator CIDR, not 0.0.0.0/0' do
+      rule = lk_ctx.find_resource(:aws_security_group_rule, :test_alb_sg_http)
+      expect(rule[:attrs][:cidr_blocks]).to eq(['24.158.175.41/32'])
+    end
+
+    it 'VPN SG uses operator CIDR (inherited from ingress_source_cidr)' do
+      rule = lk_ctx.find_resource(:aws_security_group_rule, :test_sg_vpn_ingress)
+      expect(rule[:attrs][:cidr_blocks]).to eq(['24.158.175.41/32'])
+    end
+
+    it 'no 0.0.0.0/0 ingress rules on any SG' do
+      all_ingress = lk_ctx.created_resources.select { |r|
+        r[:type] == 'aws_security_group_rule' && r[:attrs][:type] == 'ingress'
+      }
+      open_rules = all_ingress.select { |r|
+        r[:attrs][:cidr_blocks]&.include?('0.0.0.0/0')
+      }
+      expect(open_rules).to be_empty,
+        "Found 0.0.0.0/0 ingress rules: #{open_rules.map { |r| r[:attrs][:description] }}"
+    end
+  end
+
+  describe 'ingress_source_cidr on node SG (no ALB)' do
+    let(:node_locked_config) do
+      Pangea::Kubernetes::Types::ClusterConfig.new(
+        backend: :aws_nixos, kubernetes_version: '1.29', region: 'us-east-1',
+        distribution: :k3s, profile: 'cilium-standard',
+        ami_id: 'ami-test', key_pair: 'test-key', account_id: '123456789012',
+        node_pools: [{ name: :system, instance_types: ['t3.medium'], min_size: 1, max_size: 1 }],
+        network: { vpc_cidr: '10.0.0.0/16' },
+        ingress_source_cidr: '24.158.175.41/32',
+        sg_restrict_http_to_alb: false,
+      )
+    end
+    let(:nl_ctx) { create_mock_context }
+
+    before do
+      Pangea::Kubernetes::Backends::AwsNixos.create_network(nl_ctx, :test, node_locked_config, base_tags)
+    end
+
+    it 'HTTP node SG rule uses operator CIDR' do
+      rules = nl_ctx.created_resources.select { |r|
+        r[:type] == 'aws_security_group_rule' && r[:attrs][:type] == 'ingress' && r[:attrs][:description] == 'HTTP'
+      }
+      expect(rules.first[:attrs][:cidr_blocks]).to eq(['24.158.175.41/32'])
+    end
+
+    it 'HTTPS node SG rule uses operator CIDR' do
+      rules = nl_ctx.created_resources.select { |r|
+        r[:type] == 'aws_security_group_rule' && r[:attrs][:type] == 'ingress' && r[:attrs][:description] == 'HTTPS'
+      }
+      expect(rules.first[:attrs][:cidr_blocks]).to eq(['24.158.175.41/32'])
+    end
+  end
 end

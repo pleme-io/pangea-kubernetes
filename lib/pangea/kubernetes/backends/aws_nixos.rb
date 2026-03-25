@@ -727,7 +727,8 @@ module Pangea
             end
 
             if config.ingress_alb_enabled
-              # ALB security group — allows 80/443 from internet
+              # ALB security group — allows 80/443 from ingress_source_cidr
+              ingress_cidr = config.ingress_source_cidr || '0.0.0.0/0'
               alb_sg = ctx.aws_security_group(
                 :"#{name}_alb_sg",
                 description: "ALB security group for #{name} ingress",
@@ -738,17 +739,17 @@ module Pangea
               ctx.aws_security_group_rule(
                 :"#{name}_alb_sg_https",
                 type: 'ingress', from_port: 443, to_port: 443, protocol: 'tcp',
-                cidr_blocks: ['0.0.0.0/0'],
+                cidr_blocks: [ingress_cidr],
                 security_group_id: alb_sg.id,
-                description: 'HTTPS from internet'
+                description: 'HTTPS ingress'
               )
 
               ctx.aws_security_group_rule(
                 :"#{name}_alb_sg_http",
                 type: 'ingress', from_port: 80, to_port: 80, protocol: 'tcp',
-                cidr_blocks: ['0.0.0.0/0'],
+                cidr_blocks: [ingress_cidr],
                 security_group_id: alb_sg.id,
-                description: 'HTTP from internet (redirect to HTTPS)'
+                description: 'HTTP ingress (redirect to HTTPS)'
               )
 
               ctx.aws_security_group_rule(
@@ -891,7 +892,7 @@ module Pangea
               )
 
               # Security group rule for VPN ingress
-              vpn_source = config.vpn_source_cidr || '0.0.0.0/0'
+              vpn_source = config.vpn_source_cidr || config.ingress_source_cidr || '0.0.0.0/0'
               ctx.aws_security_group_rule(
                 :"#{name}_sg_vpn_ingress",
                 type: 'ingress', from_port: vpn_port, to_port: vpn_port, protocol: 'udp',
@@ -1059,7 +1060,7 @@ module Pangea
                        if config.sg_restrict_http_to_alb && config.ingress_alb_enabled
                          next nil # SG-source rules added in create_cluster
                        end
-                       ['0.0.0.0/0']
+                       [config.ingress_source_cidr || '0.0.0.0/0']
                      when :wireguard then vpn_cidr ? [vpn_cidr] : [vpc_cidr]
                      else [vpc_cidr]
                      end
