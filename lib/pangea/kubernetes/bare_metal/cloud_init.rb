@@ -46,12 +46,13 @@ module Pangea
           # @param kubernetes [Hash, nil] Vanilla Kubernetes options (full passthrough)
           # @param secrets [Hash, nil] Secrets path references (sops-nix)
           # @param vpn [Hash, nil] VPN configuration (WireGuard links)
+          # @param bootstrap_secrets [Hash, nil] Bootstrap secrets (age key, tokens) written at first boot
           # @return [String] cloud-init YAML
           def generate(cluster_name:, distribution: :k3s, profile: 'cilium-standard',
                        distribution_track: '1.34', role: 'server', node_index: 0,
                        cluster_init: false, network_id: nil, join_server: nil,
                        fluxcd: nil, argocd: nil, k3s: nil, kubernetes: nil, secrets: nil,
-                       vpn: nil)
+                       vpn: nil, bootstrap_secrets: nil)
             config = {
               'cluster_name' => cluster_name,
               'distribution' => distribution.to_s,
@@ -70,6 +71,7 @@ module Pangea
             config['kubernetes'] = stringify_keys_recursive(kubernetes) if kubernetes && !kubernetes.empty?
             config['secrets'] = stringify_keys_recursive(secrets) if secrets && !secrets.empty?
             config['vpn'] = stringify_keys_recursive(vpn) if vpn && !vpn.empty?
+            config['bootstrap_secrets'] = stringify_keys_recursive(bootstrap_secrets) if bootstrap_secrets && !bootstrap_secrets.empty?
 
             generate_cloud_init_yaml(config, distribution)
           end

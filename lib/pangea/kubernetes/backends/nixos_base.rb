@@ -109,7 +109,8 @@ module Pangea
             k3s: config.distribution == :k3s ? config.nixos&.k3s&.to_h : nil,
             kubernetes: config.distribution == :kubernetes ? config.nixos&.kubernetes&.to_h : nil,
             secrets: build_secrets_hash(config),
-            vpn: config.vpn&.to_h
+            vpn: config.vpn&.to_h,
+            bootstrap_secrets: build_bootstrap_secrets(config)
           )
         end
 
@@ -154,6 +155,17 @@ module Pangea
           end
 
           paths.empty? ? nil : paths
+        end
+
+        # Extract bootstrap secrets from config for cloud-init delivery.
+        # These are written to disk at first boot before sops-nix activates.
+        # Returns nil when no bootstrap secrets are configured.
+        def build_bootstrap_secrets(config)
+          bs = config.bootstrap_secrets
+          return nil unless bs.is_a?(Hash) && bs.any?
+          return nil if bs.values.all? { |v| v.nil? || (v.is_a?(String) && v.empty?) }
+
+          bs
         end
 
         # --- Template hooks (subclasses override) ---

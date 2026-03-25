@@ -336,6 +336,11 @@ module Pangea
         attribute :ingress_alb_domain, T::String.optional.default(nil)
         attribute :ingress_alb_zone_id, T::String.optional.default(nil)
 
+        # Bootstrap secrets delivered via cloud-init for first-boot trust chain.
+        # Written to disk before sops-nix activates. Never included in resource tags.
+        # Keys: sops_age_key (cluster age private key), flux_github_token (GitHub PAT)
+        attribute :bootstrap_secrets, T::Hash.default({}.freeze)
+
         # NixOS configuration (NixOS backends only)
         attribute :nixos, NixOSConfig.optional.default(nil)
 
