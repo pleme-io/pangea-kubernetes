@@ -19,7 +19,7 @@ require 'json'
 module Pangea
   module Kubernetes
     module BareMetal
-      # Generates cloud-init user_data for NixOS servers running k3s or vanilla Kubernetes
+      # Generates user_data for NixOS servers running k3s or vanilla Kubernetes
       # via blackmatter-kubernetes modules.
       #
       # The NixOS boot sequence reads /etc/pangea/cluster-config.json and applies
@@ -27,9 +27,13 @@ module Pangea
       #
       # Config is cloud-agnostic — the same JSON drives k3s/k8s setup on
       # AWS EC2, GCP GCE, Azure VMs, and Hetzner servers.
+      #
+      # Two output formats:
+      #   :shell        — bash script (NixOS AMIs with amazon-init, default)
+      #   :cloud_config — #cloud-config YAML (providers with real cloud-init)
       module CloudInit
         class << self
-          # Generate cloud-init YAML for a NixOS Kubernetes node.
+          # Generate user_data for a NixOS Kubernetes node.
           #
           # @param cluster_name [String] Name of the cluster
           # @param distribution [Symbol] :k3s or :kubernetes
@@ -47,12 +51,13 @@ module Pangea
           # @param secrets [Hash, nil] Secrets path references (sops-nix)
           # @param vpn [Hash, nil] VPN configuration (WireGuard links)
           # @param bootstrap_secrets [Hash, nil] Bootstrap secrets (age key, tokens) written at first boot
-          # @return [String] cloud-init YAML
+          # @param format [Symbol] :shell (NixOS AMIs) or :cloud_config (real cloud-init)
+          # @return [String] user_data string
           def generate(cluster_name:, distribution: :k3s, profile: 'cilium-standard',
                        distribution_track: '1.34', role: 'server', node_index: 0,
                        cluster_init: false, network_id: nil, join_server: nil,
                        fluxcd: nil, argocd: nil, k3s: nil, kubernetes: nil, secrets: nil,
-                       vpn: nil, bootstrap_secrets: nil)
+                       vpn: nil, bootstrap_secrets: nil, format: :shell)
             config = {
               'cluster_name' => cluster_name,
               'distribution' => distribution.to_s,
@@ -73,7 +78,12 @@ module Pangea
             config['vpn'] = stringify_keys_recursive(vpn) if vpn && !vpn.empty?
             config['bootstrap_secrets'] = stringify_keys_recursive(bootstrap_secrets) if bootstrap_secrets && !bootstrap_secrets.empty?
 
-            generate_cloud_init_yaml(config, distribution)
+            case format.to_sym
+            when :cloud_config
+              generate_cloud_config(config)
+            else
+              generate_shell_script(config)
+            end
           end
 
           private
@@ -95,6 +105,12 @@ module Pangea
             '/etc/pangea/cluster-config.json'
           end
 
+          def nix_run_cmd
+            "nix --extra-experimental-features 'nix-command flakes' run " \
+              "github:pleme-io/kindling -- server bootstrap " \
+              "--config '#{config_path}'"
+          end
+
           # Recursively convert symbol keys to strings for JSON serialization
           def stringify_keys_recursive(obj)
             case obj
@@ -107,7 +123,27 @@ module Pangea
             end
           end
 
-          def generate_cloud_init_yaml(config, _distribution)
+          # Shell script format — for NixOS AMIs with amazon-init.
+          # amazon-init executes user_data as a shell script directly.
+          def generate_shell_script(config)
+            json = config.to_json
+            <<~SHELL
+              #!/usr/bin/env bash
+              set -euo pipefail
+
+              mkdir -p "$(dirname '#{config_path}')"
+              cat > '#{config_path}' << 'PANGEA_CONFIG_EOF'
+              #{json}
+              PANGEA_CONFIG_EOF
+              chmod 0640 '#{config_path}'
+
+              #{nix_run_cmd}
+            SHELL
+          end
+
+          # cloud-config YAML format — for providers with real cloud-init
+          # (Hetzner, GCP, Azure, etc.).
+          def generate_cloud_config(config)
             <<~YAML
               #cloud-config
               write_files:
@@ -115,9 +151,7 @@ module Pangea
                   content: '#{config.to_json}'
                   permissions: '0640'
               runcmd:
-                - ['nix', '--extra-experimental-features', 'nix-command flakes', 'run',
-                   'github:pleme-io/kindling', '--', 'server', 'bootstrap',
-                   '--config', '#{config_path}']
+                - ['bash', '-c', "#{nix_run_cmd}"]
             YAML
           end
         end

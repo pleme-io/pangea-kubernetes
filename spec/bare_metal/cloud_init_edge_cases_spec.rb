@@ -113,15 +113,28 @@ RSpec.describe 'CloudInit edge cases' do
     end
 
     describe 'bootstrap via nix run' do
-      it 'uses nix run github:pleme-io/kindling instead of systemctl' do
+      it 'uses nix run github:pleme-io/kindling in shell format (default)' do
         result = described_class.generate(cluster_name: 'test')
         expect(result).to include('nix')
         expect(result).to include('nix-command flakes')
         expect(result).to include('github:pleme-io/kindling')
-        expect(result).to include('server')
-        expect(result).to include('bootstrap')
+        expect(result).to include('server bootstrap')
         expect(result).to include('/etc/pangea/cluster-config.json')
         expect(result).not_to include('systemctl')
+      end
+
+      it 'defaults to shell script format' do
+        result = described_class.generate(cluster_name: 'test')
+        expect(result.strip).to start_with('#!/usr/bin/env bash')
+        expect(result).not_to include('#cloud-config')
+      end
+
+      it 'supports cloud_config format' do
+        result = described_class.generate(cluster_name: 'test', format: :cloud_config)
+        expect(result).to include('#cloud-config')
+        expect(result).to include('write_files')
+        expect(result).to include('github:pleme-io/kindling')
+        expect(result).not_to include('#!/usr/bin/env bash')
       end
     end
 

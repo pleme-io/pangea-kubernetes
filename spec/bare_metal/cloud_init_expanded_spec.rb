@@ -90,7 +90,7 @@ RSpec.describe Pangea::Kubernetes::BareMetal::CloudInit, 'expanded fields' do
         cluster_init: true
       )
 
-      expect(yaml_old).to include('#cloud-config')
+      expect(yaml_old.strip).to start_with('#!/usr/bin/env bash')
       expect(yaml_old).to include('"cluster_name":"test"')
       expect(yaml_old).to include('"distribution":"k3s"')
       expect(yaml_old).to include('"cluster_init":true')
