@@ -277,3 +277,39 @@ RSpec.shared_examples 'typed backend contract' do
   end
 end
 ```
+
+## 3-Tier Subnet Architecture
+
+Network phase creates a 3-tier x 3-AZ subnet layout with explicit routing:
+
+| Tier | AZs | Routing | Purpose |
+|------|-----|---------|---------|
+| public | a, b, c | IGW (direct internet) | ALB, NAT gateway, bastion |
+| web | a, b, c | NAT gateway (egress only, via public-a) | App servers, K3s nodes |
+| data | a, b, c | VPC-local only (no internet) | RDS, ElastiCache, etcd |
+
+- NAT gateway lives in `public-a`; web-tier route tables point to it
+- Data tier has no NAT/IGW routes — fully isolated
+- Each tier gets its own route table; no shared routes between tiers
+
+## Configurable Load Balancers
+
+Load balancers are created in the backend, not hand-crafted in templates.
+Three LB types, each independently toggleable:
+
+| LB | Type | Default | Config key | Purpose |
+|----|------|---------|------------|---------|
+| ALB | Application | off | `alb_enabled` | HTTP/HTTPS ingress (web traffic) |
+| VPN NLB | Network | off | `vpn.enabled` | WireGuard UDP (VPN tunnel) |
+| K8s API NLB | Network | always on | — | Internal stable endpoint for kubelet/workers |
+
+- ALB supports HTTP (80) and HTTPS (443) listeners
+- VPN NLB uses UDP on the configured WireGuard port
+- K8s API NLB is internal-only, TCP 6443, created by every NixOS backend
+
+## Etcd Backup Toggle
+
+`ClusterConfig.etcd_backup_enabled` (default: `true` in production profile,
+`false` in dev profile) controls whether S3 etcd backup resources are created.
+When disabled, no S3 bucket, IAM policy, or CronJob is synthesized — reducing
+cost and complexity for ephemeral dev clusters.
