@@ -280,6 +280,19 @@ module Pangea
         # Disable for dev/cost savings. Production should keep this on.
         attribute :etcd_backup_versioning, T::Bool.default(true)
 
+        # ── Load Balancing ─────────────────────────────────────────
+        # ALB for HTTP/HTTPS ingress traffic (public → web tier nodes)
+        attribute :ingress_alb_enabled, T::Bool.default(false)
+        attribute :ingress_alb_certificate_arn, T::String.optional.default(nil)
+        attribute :ingress_alb_idle_timeout, (T::Coercible::Integer | T::Coercible::Float).default(60)
+        attribute :ingress_alb_http_redirect, T::Bool.default(true)
+
+        # VPN NLB for WireGuard operator access (public, UDP)
+        attribute :vpn_nlb_enabled, T::Bool.default(false)
+        attribute :vpn_nlb_port, (T::Coercible::Integer | T::Coercible::Float).default(51822)
+
+        # Internal K8s API NLB is always created (required for worker join)
+
         # NixOS configuration (NixOS backends only)
         attribute :nixos, NixOSConfig.optional.default(nil)
 

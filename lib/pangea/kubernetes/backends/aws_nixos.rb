@@ -39,6 +39,9 @@ module Pangea
         ControlPlaneRef = Struct.new(
           :nlb, :asg, :lt, :tg, :listener, :asg_tg,
           :subnet_ids, :sg_id, :instance_profile_name, :ami_id, :key_name,
+          :ingress_alb, :ingress_alb_tg, :ingress_alb_https_listener, :ingress_alb_http_listener,
+          :vpn_nlb, :vpn_nlb_tg, :vpn_nlb_listener,
+          :public_subnet_ids,
           keyword_init: true
         ) do
           def ipv4_address
@@ -585,12 +588,184 @@ module Pangea
               lb_target_group_arn: tg.arn
             )
 
+            # ── Ingress ALB (optional — HTTP/HTTPS for services) ────
+            ingress_alb = nil
+            ingress_alb_tg = nil
+            ingress_alb_https_listener = nil
+            ingress_alb_http_listener = nil
+            public_subnet_ids = resolve_public_subnet_ids(config, result)
+
+            if config.ingress_alb_enabled
+              # ALB security group — allows 80/443 from internet
+              alb_sg = ctx.aws_security_group(
+                :"#{name}_alb_sg",
+                description: "ALB security group for #{name} ingress",
+                vpc_id: result.network&.vpc&.id,
+                tags: tags.merge(Name: "#{name}-alb-sg")
+              )
+
+              ctx.aws_security_group_rule(
+                :"#{name}_alb_sg_https",
+                type: 'ingress', from_port: 443, to_port: 443, protocol: 'tcp',
+                cidr_blocks: ['0.0.0.0/0'],
+                security_group_id: alb_sg.id,
+                description: 'HTTPS from internet'
+              )
+
+              ctx.aws_security_group_rule(
+                :"#{name}_alb_sg_http",
+                type: 'ingress', from_port: 80, to_port: 80, protocol: 'tcp',
+                cidr_blocks: ['0.0.0.0/0'],
+                security_group_id: alb_sg.id,
+                description: 'HTTP from internet (redirect to HTTPS)'
+              )
+
+              ctx.aws_security_group_rule(
+                :"#{name}_alb_sg_egress",
+                type: 'egress', from_port: 0, to_port: 0, protocol: '-1',
+                cidr_blocks: ['0.0.0.0/0'],
+                security_group_id: alb_sg.id
+              )
+
+              ingress_alb = ctx.aws_lb(
+                :"#{name}_ingress_alb",
+                name: "#{name}-ingress",
+                internal: false,
+                load_balancer_type: 'application',
+                subnets: public_subnet_ids,
+                security_groups: [alb_sg.id],
+                idle_timeout: config.ingress_alb_idle_timeout,
+                tags: tags.merge(Name: "#{name}-ingress-alb")
+              )
+
+              # Target group for ingress controller (HTTP on nodes)
+              ingress_alb_tg = ctx.aws_lb_target_group(
+                :"#{name}_ingress_tg",
+                name: "#{name}-ingress-tg",
+                port: 80,
+                protocol: 'HTTP',
+                vpc_id: result.network&.vpc&.id,
+                target_type: 'instance',
+                health_check: {
+                  protocol: 'HTTP',
+                  port: '80',
+                  path: '/healthz',
+                  healthy_threshold: 2,
+                  unhealthy_threshold: 3,
+                  interval: 15,
+                },
+                tags: tags.merge(Name: "#{name}-ingress-tg")
+              )
+
+              # HTTPS listener (TLS termination at ALB)
+              if config.ingress_alb_certificate_arn
+                ingress_alb_https_listener = ctx.aws_lb_listener(
+                  :"#{name}_ingress_https",
+                  load_balancer_arn: ingress_alb.arn,
+                  port: 443,
+                  protocol: 'HTTPS',
+                  ssl_policy: 'ELBSecurityPolicy-TLS13-1-2-2021-06',
+                  certificate_arn: config.ingress_alb_certificate_arn,
+                  default_action: [{ type: 'forward', target_group_arn: ingress_alb_tg.arn }]
+                )
+              end
+
+              # HTTP listener (redirect to HTTPS or forward)
+              if config.ingress_alb_http_redirect && config.ingress_alb_certificate_arn
+                ingress_alb_http_listener = ctx.aws_lb_listener(
+                  :"#{name}_ingress_http",
+                  load_balancer_arn: ingress_alb.arn,
+                  port: 80,
+                  protocol: 'HTTP',
+                  default_action: [{
+                    type: 'redirect',
+                    redirect: { port: '443', protocol: 'HTTPS', status_code: 'HTTP_301' }
+                  }]
+                )
+              else
+                ingress_alb_http_listener = ctx.aws_lb_listener(
+                  :"#{name}_ingress_http",
+                  load_balancer_arn: ingress_alb.arn,
+                  port: 80,
+                  protocol: 'HTTP',
+                  default_action: [{ type: 'forward', target_group_arn: ingress_alb_tg.arn }]
+                )
+              end
+
+              # Attach worker ASG to ingress target group (done in create_node_pool)
+            end
+
+            # ── VPN NLB (optional — WireGuard operator access) ──────
+            vpn_nlb = nil
+            vpn_nlb_tg = nil
+            vpn_nlb_listener = nil
+
+            if config.vpn_nlb_enabled
+              vpn_port = config.vpn_nlb_port.to_i
+
+              vpn_nlb = ctx.aws_lb(
+                :"#{name}_vpn_nlb",
+                name: "#{name}-vpn",
+                internal: false,
+                load_balancer_type: 'network',
+                subnets: public_subnet_ids,
+                tags: tags.merge(Name: "#{name}-vpn-nlb")
+              )
+
+              vpn_nlb_tg = ctx.aws_lb_target_group(
+                :"#{name}_vpn_tg",
+                name: "#{name}-vpn-wg",
+                port: vpn_port,
+                protocol: 'UDP',
+                vpc_id: result.network&.vpc&.id,
+                target_type: 'instance',
+                health_check: {
+                  protocol: 'TCP',
+                  port: '22',
+                  healthy_threshold: 3,
+                  unhealthy_threshold: 3,
+                  interval: 30,
+                },
+                tags: tags.merge(Name: "#{name}-vpn-tg")
+              )
+
+              vpn_nlb_listener = ctx.aws_lb_listener(
+                :"#{name}_vpn_listener",
+                load_balancer_arn: vpn_nlb.arn,
+                port: vpn_port,
+                protocol: 'UDP',
+                default_action: [{ type: 'forward', target_group_arn: vpn_nlb_tg.arn }]
+              )
+
+              # Attach control plane ASG to VPN target group
+              ctx.aws_autoscaling_attachment(
+                :"#{name}_vpn_asg_tg",
+                autoscaling_group_name: asg.id,
+                lb_target_group_arn: vpn_nlb_tg.arn
+              )
+
+              # Security group rule for VPN ingress
+              ctx.aws_security_group_rule(
+                :"#{name}_sg_vpn_ingress",
+                type: 'ingress', from_port: vpn_port, to_port: vpn_port, protocol: 'udp',
+                cidr_blocks: ['0.0.0.0/0'],
+                security_group_id: sg_id,
+                description: 'WireGuard VPN (internet-facing NLB)'
+              )
+            end
+
             ControlPlaneRef.new(
               nlb: nlb, asg: asg, lt: lt, tg: tg,
               listener: listener, asg_tg: asg_tg,
               subnet_ids: subnet_ids, sg_id: sg_id,
               instance_profile_name: instance_profile_name,
-              ami_id: ami_id, key_name: key_name
+              ami_id: ami_id, key_name: key_name,
+              ingress_alb: ingress_alb, ingress_alb_tg: ingress_alb_tg,
+              ingress_alb_https_listener: ingress_alb_https_listener,
+              ingress_alb_http_listener: ingress_alb_http_listener,
+              vpn_nlb: vpn_nlb, vpn_nlb_tg: vpn_nlb_tg,
+              vpn_nlb_listener: vpn_nlb_listener,
+              public_subnet_ids: public_subnet_ids
             )
           end
 
