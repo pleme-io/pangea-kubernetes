@@ -176,14 +176,19 @@ module Pangea
         end
 
         # Extract only the secrets workers need to join the cluster.
-        # Workers receive k3s_server_token (for cluster join authentication)
-        # but NOT flux tokens, SOPS keys, VPN keys, or admin passwords.
+        # Workers receive:
+        # - k3s_server_token: cluster join authentication
+        # - nix_github_token: access private flake inputs during nixos-rebuild
+        # They do NOT receive flux tokens, SOPS keys, VPN keys, or admin passwords.
+        AGENT_BOOTSTRAP_KEYS = %i[k3s_server_token nix_github_token].freeze
+
         def build_agent_bootstrap_secrets(config)
           bs = config.bootstrap_secrets
           return nil unless bs.is_a?(Hash)
 
-          agent_secrets = {}
-          agent_secrets[:k3s_server_token] = bs[:k3s_server_token] if bs[:k3s_server_token]
+          agent_secrets = AGENT_BOOTSTRAP_KEYS.each_with_object({}) do |key, h|
+            h[key] = bs[key] if bs[key]
+          end
           agent_secrets.empty? ? nil : agent_secrets
         end
 
