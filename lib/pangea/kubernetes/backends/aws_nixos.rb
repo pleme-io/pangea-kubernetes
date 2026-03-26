@@ -46,6 +46,7 @@ module Pangea
           :vpn_nlb, :vpn_nlb_tg, :vpn_nlb_listener,
           :public_subnet_ids,
           :distribution_track,
+          :agent_bootstrap_secrets,
           keyword_init: true
         ) do
           def ipv4_address
@@ -919,7 +920,8 @@ module Pangea
               vpn_nlb: vpn_nlb, vpn_nlb_tg: vpn_nlb_tg,
               vpn_nlb_listener: vpn_nlb_listener,
               public_subnet_ids: public_subnet_ids,
-              distribution_track: config.distribution_track || config.kubernetes_version
+              distribution_track: config.distribution_track || config.kubernetes_version,
+              agent_bootstrap_secrets: build_agent_bootstrap_secrets(config)
             )
           end
 

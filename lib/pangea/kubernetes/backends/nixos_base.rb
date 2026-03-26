@@ -115,12 +115,18 @@ module Pangea
         end
 
         # Build cloud-init for a worker/agent node.
+        # Workers receive only the k3s_server_token from bootstrap_secrets
+        # (they need it to authenticate to the control plane for cluster join).
         def build_agent_cloud_init(name, tags, cluster_ref)
           track = if cluster_ref.respond_to?(:distribution_track) && cluster_ref.distribution_track
                     cluster_ref.distribution_track
                   else
                     tags[:DistributionTrack] || '1.34'
                   end
+
+          agent_secrets = if cluster_ref.respond_to?(:agent_bootstrap_secrets)
+                           cluster_ref.agent_bootstrap_secrets
+                         end
 
           BareMetal::CloudInit.generate(
             cluster_name: name.to_s,
@@ -130,7 +136,8 @@ module Pangea
             role: 'agent',
             node_index: 0,
             cluster_init: false,
-            join_server: cluster_ref.ipv4_address
+            join_server: cluster_ref.ipv4_address,
+            bootstrap_secrets: agent_secrets
           )
         end
 
@@ -166,6 +173,18 @@ module Pangea
           return nil if bs.values.all? { |v| v.nil? || (v.is_a?(String) && v.empty?) }
 
           bs
+        end
+
+        # Extract only the secrets workers need to join the cluster.
+        # Workers receive k3s_server_token (for cluster join authentication)
+        # but NOT flux tokens, SOPS keys, VPN keys, or admin passwords.
+        def build_agent_bootstrap_secrets(config)
+          bs = config.bootstrap_secrets
+          return nil unless bs.is_a?(Hash)
+
+          agent_secrets = {}
+          agent_secrets[:k3s_server_token] = bs[:k3s_server_token] if bs[:k3s_server_token]
+          agent_secrets.empty? ? nil : agent_secrets
         end
 
         # --- Template hooks (subclasses override) ---
