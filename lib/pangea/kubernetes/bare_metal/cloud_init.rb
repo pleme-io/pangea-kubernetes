@@ -105,12 +105,6 @@ module Pangea
             '/etc/pangea/cluster-config.json'
           end
 
-          def nix_run_cmd
-            "nix --extra-experimental-features 'nix-command flakes' run " \
-              "github:pleme-io/kindling -- server bootstrap " \
-              "--config '#{config_path}'"
-          end
-
           # Recursively convert symbol keys to strings for JSON serialization
           def stringify_keys_recursive(obj)
             case obj
@@ -125,6 +119,11 @@ module Pangea
 
           # Shell script format — for NixOS AMIs with amazon-init.
           # amazon-init executes user_data as a shell script directly.
+          #
+          # The script ONLY writes the cluster config JSON. The pre-installed
+          # kindling-server-bootstrap.service (baked into the AMI) detects the
+          # file via ExecCondition and runs the 13-phase bootstrap automatically.
+          # This avoids a slow `nix run` that would re-download/build kindling.
           def generate_shell_script(config)
             json = config.to_json
             <<~SHELL
@@ -136,13 +135,14 @@ module Pangea
               #{json}
               PANGEA_CONFIG_EOF
               chmod 0640 '#{config_path}'
-
-              #{nix_run_cmd}
             SHELL
           end
 
           # cloud-config YAML format — for providers with real cloud-init
           # (Hetzner, GCP, Azure, etc.).
+          #
+          # Only writes the config file. The pre-installed kindling-server-bootstrap
+          # service handles the actual bootstrap after cloud-init completes.
           def generate_cloud_config(config)
             <<~YAML
               #cloud-config
@@ -150,8 +150,6 @@ module Pangea
                 - path: #{config_path}
                   content: '#{config.to_json}'
                   permissions: '0640'
-              runcmd:
-                - ['bash', '-c', "#{nix_run_cmd}"]
             YAML
           end
         end
