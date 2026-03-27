@@ -862,13 +862,30 @@ module Pangea
             if config.vpn_nlb_enabled
               vpn_port = config.vpn_nlb_port.to_i
 
-              vpn_nlb = ctx.aws_lb(
-                :"#{name}_vpn_nlb",
+              # When EIP allocation IDs are provided, use subnet_mapping to
+              # attach Elastic IPs to the NLB. This gives the VPN endpoint a
+              # permanent public IP that survives NLB recreation. Otherwise
+              # fall back to plain subnets (dynamic DNS-based endpoint).
+              vpn_eip_ids = config.respond_to?(:vpn_eip_allocation_ids) ? config.vpn_eip_allocation_ids : []
+              vpn_nlb_attrs = {
                 name: "#{name}-vpn",
                 internal: false,
                 load_balancer_type: 'network',
-                subnets: public_subnet_ids,
-                tags: tags.merge(Name: "#{name}-vpn-nlb")
+                tags: tags.merge(Name: "#{name}-vpn-nlb"),
+              }
+              if vpn_eip_ids.any?
+                vpn_nlb_attrs[:subnet_mapping] = public_subnet_ids.zip(vpn_eip_ids).map do |subnet_id, eip_id|
+                  mapping = { subnet_id: subnet_id }
+                  mapping[:allocation_id] = eip_id if eip_id
+                  mapping
+                end
+              else
+                vpn_nlb_attrs[:subnets] = public_subnet_ids
+              end
+
+              vpn_nlb = ctx.aws_lb(
+                :"#{name}_vpn_nlb",
+                **vpn_nlb_attrs
               )
 
               health_port = (config.vpn_health_check_port || vpn_port).to_s

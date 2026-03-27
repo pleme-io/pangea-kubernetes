@@ -292,6 +292,13 @@ module Pangea
         attribute :vpn_nlb_enabled, T::Bool.default(false)
         attribute :vpn_nlb_port, (T::Coercible::Integer | T::Coercible::Float).default(51822)
 
+        # Elastic IP allocation IDs for VPN NLB subnet_mapping.
+        # When provided, the VPN NLB uses subnet_mapping with these EIPs
+        # instead of plain subnets, giving the NLB a permanent public IP
+        # that survives destroy/recreate cycles (when EIPs are managed
+        # in a separate Terraform state like the packer workspace).
+        attribute :vpn_eip_allocation_ids, T::Array.of(T::String).default([].freeze)
+
         # Internal K8s API NLB is always created (required for worker join)
 
         # ── Security Hardening ────────────────────────────────────────
