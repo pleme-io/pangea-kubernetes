@@ -607,7 +607,15 @@ module Pangea
           def create_cluster(ctx, name, config, result, tags)
             system_pool = config.system_node_pool
             instance_type = system_pool.instance_types.first
-            ami_id = config.ami_id || config.nixos&.image_id || 'ami-nixos-latest'
+            ami_id = if config.ami_id
+                        config.ami_id
+                      elsif config.ssm_ami_parameter
+                        ctx.extend(Pangea::Resources::AWS) unless ctx.respond_to?(:data_aws_ssm_parameter)
+                        ssm_data = ctx.data_aws_ssm_parameter(:"#{name}-ami", name: config.ssm_ami_parameter)
+                        ssm_data.value
+                      else
+                        config.nixos&.image_id || 'ami-nixos-latest'
+                      end
             subnet_ids = resolve_subnet_ids(config, result)
             sg_id = result.network&.sg&.id
             instance_profile_name = result.iam&.instance_profile&.ref(:name)

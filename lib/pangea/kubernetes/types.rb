@@ -370,6 +370,7 @@ module Pangea
         # AWS-specific (managed EKS or NixOS EC2)
         attribute :role_arn, T::String.optional.default(nil)
         attribute :ami_id, T::String.optional.default(nil)
+        attribute :ssm_ami_parameter, T::String.optional.default(nil)
         attribute :key_pair, T::String.optional.default(nil)
 
         # GCP-specific (managed GKE or NixOS GCE)
@@ -423,6 +424,7 @@ module Pangea
           hash[:vpn] = vpn.to_h if vpn && vpn.links.any?
           hash[:role_arn] = role_arn if role_arn
           hash[:ami_id] = ami_id if ami_id
+          hash[:ssm_ami_parameter] = ssm_ami_parameter if ssm_ami_parameter
           hash[:key_pair] = key_pair if key_pair
           hash[:project] = project if project
           hash[:gce_image] = gce_image if gce_image
