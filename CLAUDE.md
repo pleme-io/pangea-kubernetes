@@ -197,6 +197,50 @@ VPN config is validated before `ClusterConfig` coercion -- if a VPN hash is pres
 but malformed, a clear error is raised rather than a cryptic Dry::Struct failure.
 VPN-enabled clusters synthesize an additional NLB listener for WireGuard UDP traffic.
 
+
+## Dynamic node_index via IMDSv2
+
+Worker nodes use EC2 Instance Metadata Service v2 (IMDSv2) to dynamically
+determine their `node_index` at boot time rather than relying on static
+Terraform indices. This solves the ASG replacement problem where Terraform's
+`count.index` becomes stale after instance recycling.
+
+The cloud-init template queries IMDSv2 for the instance ID, then uses a
+tag-based lookup to resolve the node's position in the cluster:
+
+```ruby
+# In BareMetal::CloudInit.generate()
+# IMDSv2 token acquisition + instance identity
+imdsv2_token = "$(curl -s -X PUT 'http://169.254.169.254/latest/api/token' -H 'X-aws-ec2-metadata-token-ttl-seconds: 60')"
+instance_id = "$(curl -s -H 'X-aws-ec2-metadata-token: #{imdsv2_token}' http://169.254.169.254/latest/meta-data/instance-id)"
+```
+
+This replaces the previous pattern where `node_index` was baked into the launch
+template at Terraform plan time. With IMDSv2, the index is resolved at boot,
+making ASG scaling and replacement deterministic.
+
+## terraform_base64encode() Fix
+
+The `NixosBase` backend previously used `base64encode()` for cloud-init
+user_data, which is a Terraform built-in that operates on string literals. For
+dynamic content (interpolated variables, template references), this caused
+plan-time errors because the string wasn't fully resolved yet.
+
+The fix uses `terraform_base64encode()` from `pangea-core`'s expression helpers,
+which wraps the content in Terraform's native `base64encode()` function call
+rather than evaluating it at synthesis time:
+
+```ruby
+# Before (broken for dynamic content):
+user_data = Base64.strict_encode64(cloud_init_content)
+
+# After (works with Terraform interpolation):
+user_data = Pangea::Core::Expressions.terraform_base64encode(cloud_init_content)
+```
+
+This generates `base64encode(...)` in the Terraform JSON output, letting
+Terraform handle the encoding at apply time when all variables are resolved.
+
 ## Dependencies
 
 - pangea-core ~> 0.2
