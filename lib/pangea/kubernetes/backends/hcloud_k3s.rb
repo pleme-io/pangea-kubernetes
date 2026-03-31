@@ -89,10 +89,12 @@ module Pangea
             # Hetzner doesn't have ASG — create individual servers
             server_type = pool_config.instance_types.first
             count = pool_config.effective_desired_size
-            cloud_init = build_agent_cloud_init(name, tags, cluster_ref)
 
             servers = []
             count.times do |idx|
+              # Generate per-worker cloud-init with unique node_index (not shared)
+              cloud_init = build_agent_cloud_init(name, tags, cluster_ref, node_index: idx)
+
               server = ctx.hcloud_server(
                 :"#{name}_#{pool_config.name}_#{idx}",
                 name: "#{name}-#{pool_config.name}-#{idx}",

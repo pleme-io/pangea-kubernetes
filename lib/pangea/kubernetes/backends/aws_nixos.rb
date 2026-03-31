@@ -1,7 +1,5 @@
 # frozen_string_literal: true
 
-require 'base64'
-
 # Copyright 2025 The Pangea Authors
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -627,7 +625,7 @@ module Pangea
             cp_lt_attrs = {
               image_id: ami_id,
               instance_type: instance_type,
-              user_data: Base64.strict_encode64(cloud_init),
+              user_data: terraform_base64encode(cloud_init),
               iam_instance_profile: instance_profile_name ? { name: instance_profile_name } : nil,
               vpc_security_group_ids: sg_id ? [sg_id] : [],
               metadata_options: {
@@ -951,8 +949,12 @@ module Pangea
           end
 
           # ── Phase 4: Node pools (workers) ────────────────────────────
+          # Overrides nixos_create_node_pool to use JOIN_SERVER_PLACEHOLDER so
+          # terraform_base64encode can inject the actual Terraform expression
+          # via replace() — keeping ${...} references resolvable at apply time.
           def create_node_pool(ctx, name, cluster_ref, pool_config, tags)
-            nixos_create_node_pool(ctx, name, cluster_ref, pool_config, tags)
+            cloud_init = build_agent_cloud_init(name, tags, cluster_ref, use_join_placeholder: true)
+            create_worker_pool(ctx, name, cluster_ref, pool_config, cloud_init, tags)
           end
 
           # --- NixosBase template hooks ---
@@ -968,10 +970,19 @@ module Pangea
             sg_id = cluster_ref.respond_to?(:sg_id) ? cluster_ref.sg_id : nil
             instance_profile_name = cluster_ref.respond_to?(:instance_profile_name) ? cluster_ref.instance_profile_name : nil
 
+            # Build replacement mapping for Terraform references in the cloud-init.
+            # JOIN_SERVER_PLACEHOLDER is replaced with the NLB DNS name expression
+            # at Terraform apply time (not synthesis time).
+            # Strip ${...} wrapper from the reference to get a bare Terraform
+            # expression suitable for use inside a function call.
+            join_server_ref = cluster_ref.ipv4_address.to_s
+            join_server_tf = strip_tf_interpolation(join_server_ref)
+            replacements = { JOIN_SERVER_PLACEHOLDER => join_server_tf }
+
             worker_lt_attrs = {
               image_id: ami_id,
               instance_type: instance_type,
-              user_data: Base64.strict_encode64(cloud_init),
+              user_data: terraform_base64encode(cloud_init, replacements),
               iam_instance_profile: instance_profile_name ? { name: instance_profile_name } : nil,
               vpc_security_group_ids: sg_id ? [sg_id] : [],
               metadata_options: {
@@ -1131,6 +1142,67 @@ module Pangea
                   Resource: '*' }
               ]
             })
+          end
+
+          # Wrap a cloud-init string in Terraform's base64encode() function.
+          #
+          # Unlike Ruby's Base64.strict_encode64() which encodes at synthesis
+          # time (making ${...} Terraform references opaque), this produces a
+          # Terraform expression that defers encoding to apply time. Terraform
+          # resolves any interpolation references BEFORE base64-encoding.
+          #
+          # The +replacements+ hash maps placeholder strings in the cloud-init
+          # to raw Terraform expressions. Placeholders are swapped via nested
+          # replace() calls so the Terraform references sit outside string
+          # literals and are properly interpolated. All other ${...} patterns
+          # (e.g., shell variables) are escaped to $${...} so Terraform treats
+          # them as literal text.
+          #
+          # @param raw [String] The cloud-init script (may contain shell ${} vars)
+          # @param replacements [Hash<String,String>] placeholder => Terraform expression
+          # @return [String] A Terraform expression string for the user_data attribute
+          def terraform_base64encode(raw, replacements = {})
+            # Escape $ to $$ so Terraform treats ALL ${...} as literal text.
+            # This protects shell variables like ${INSTANCE_ID} from Terraform
+            # interpolation. Actual Terraform references are injected via
+            # replace() calls below.
+            escaped = raw.gsub('$', '$$')
+
+            # Terraform string literal escaping: \ -> \\, " -> \", newline -> \n
+            tf_str = escaped
+              .gsub('\\', '\\\\')
+              .gsub('"', '\\"')
+              .gsub("\n", '\\n')
+              .gsub("\r", '\\r')
+              .gsub("\t", '\\t')
+
+            expr = "\"#{tf_str}\""
+
+            # Wrap in replace() calls for each Terraform-resolved placeholder.
+            # The placeholder in the escaped string has $$ doubled, so we match
+            # the escaped form.
+            replacements.each do |placeholder, tf_expression|
+              escaped_placeholder = placeholder.gsub('$', '$$')
+              expr = "replace(#{expr}, \"#{escape_tf_string(escaped_placeholder)}\", #{tf_expression})"
+            end
+
+            "${base64encode(#{expr})}"
+          end
+
+          # Escape a string for use inside a Terraform string literal
+          def escape_tf_string(str)
+            str.gsub('\\', '\\\\').gsub('"', '\\"')
+          end
+
+          # Strip ${...} wrapper from a Terraform interpolation string to get
+          # a bare expression. E.g., "${aws_lb.x.dns_name}" -> "aws_lb.x.dns_name"
+          # Returns the original string unchanged if not wrapped.
+          def strip_tf_interpolation(ref)
+            if ref.start_with?('${') && ref.end_with?('}')
+              ref[2..-2]
+            else
+              ref
+            end
           end
 
           def port_range_start(port)

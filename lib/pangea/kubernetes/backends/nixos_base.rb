@@ -81,6 +81,12 @@ module Pangea
           servers.first
         end
 
+        # Placeholder used in agent cloud-init for the join server address.
+        # Backends that defer user_data encoding to Terraform (e.g., AWS with
+        # terraform_base64encode) replace this with the actual Terraform
+        # expression at synthesis time via replace().
+        JOIN_SERVER_PLACEHOLDER = '__PANGEA_JOIN_SERVER__'
+
         # Create worker node pool via template hooks.
         # Subclasses override create_worker_pool.
         def nixos_create_node_pool(ctx, name, cluster_ref, pool_config, tags)
@@ -117,7 +123,19 @@ module Pangea
         # Build cloud-init for a worker/agent node.
         # Workers receive only the k3s_server_token from bootstrap_secrets
         # (they need it to authenticate to the control plane for cluster join).
-        def build_agent_cloud_init(name, tags, cluster_ref)
+        #
+        # node_index defaults to 'dynamic' — the generated shell script queries
+        # EC2 instance metadata at boot time to derive a unique index from the
+        # instance ID. This prevents duplicate hostnames when multiple ASG
+        # instances share the same launch template. Backends that create
+        # individual resources (e.g., Hetzner) can override with a static index.
+        #
+        # When use_join_placeholder is true, the join_server value is replaced
+        # with JOIN_SERVER_PLACEHOLDER. This allows backends that use Terraform
+        # functions (e.g., base64encode) to inject the actual Terraform
+        # expression via replace() at apply time, avoiding premature encoding
+        # of ${...} references by Ruby.
+        def build_agent_cloud_init(name, tags, cluster_ref, node_index: 'dynamic', use_join_placeholder: false)
           track = if cluster_ref.respond_to?(:distribution_track) && cluster_ref.distribution_track
                     cluster_ref.distribution_track
                   else
@@ -128,15 +146,17 @@ module Pangea
                            cluster_ref.agent_bootstrap_secrets
                          end
 
+          join_server = use_join_placeholder ? JOIN_SERVER_PLACEHOLDER : cluster_ref.ipv4_address
+
           BareMetal::CloudInit.generate(
             cluster_name: name.to_s,
             distribution: tags[:Distribution]&.to_sym || :k3s,
             profile: tags[:Profile] || 'cloud-server',
             distribution_track: track,
             role: 'agent',
-            node_index: 0,
+            node_index: node_index,
             cluster_init: false,
-            join_server: cluster_ref.ipv4_address,
+            join_server: join_server,
             bootstrap_secrets: agent_secrets
           )
         end

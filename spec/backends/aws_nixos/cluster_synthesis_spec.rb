@@ -163,9 +163,11 @@ RSpec.describe Pangea::Kubernetes::Backends::AwsNixos do
 
       lt = ctx.find_resource(:aws_launch_template, :production_cp_lt)
       user_data = lt[:attrs][:user_data]
-      expect(user_data).to include('"distribution":"k3s"')
-      expect(user_data).to include('"profile":"cilium-standard"')
-      expect(user_data).to include('"cluster_init":true')
+      # user_data is now a Terraform base64encode() expression with escaped quotes
+      expect(user_data).to include('distribution')
+      expect(user_data).to include('k3s')
+      expect(user_data).to include('cilium-standard')
+      expect(user_data).to include('cluster_init')
     end
 
     it 'enforces IMDSv2 on control plane launch template' do
@@ -258,9 +260,11 @@ RSpec.describe Pangea::Kubernetes::Backends::AwsNixos do
 
       lt = ctx.find_resource(:aws_launch_template, :test_cp_lt)
       user_data = lt[:attrs][:user_data]
-      expect(user_data).to include('"distribution":"kubernetes"')
-      expect(user_data).to include('"profile":"calico-standard"')
-      expect(user_data).to include('"role":"control-plane"')
+      # user_data is now a Terraform base64encode() expression with escaped quotes
+      expect(user_data).to include('distribution')
+      expect(user_data).to include('kubernetes')
+      expect(user_data).to include('calico-standard')
+      expect(user_data).to include('control-plane')
     end
 
     context 'parked mode (min_size=0)' do
@@ -348,9 +352,10 @@ RSpec.describe Pangea::Kubernetes::Backends::AwsNixos do
         described_class.create_cluster(ctx, :argo, argocd_config, argocd_arch, base_tags)
         lt = ctx.find_resource(:aws_launch_template, :argo_cp_lt)
         user_data = lt[:attrs][:user_data]
-        expect(user_data).to include('"argocd"')
+        # user_data is now a Terraform base64encode() expression
+        expect(user_data).to include('argocd')
         expect(user_data).to include('pleme-io/akeyless-k8s')
-        expect(user_data).not_to include('"fluxcd"')
+        expect(user_data).not_to include('fluxcd')
       end
     end
   end
@@ -394,7 +399,8 @@ RSpec.describe Pangea::Kubernetes::Backends::AwsNixos do
       described_class.create_node_pool(ctx, :production, cluster_ref, pool_config, base_tags)
 
       lt = ctx.find_resource(:aws_launch_template, :production_workers_lt)
-      expect(lt[:attrs][:user_data]).to include('"role":"agent"')
+      # user_data is now a Terraform base64encode() expression
+      expect(lt[:attrs][:user_data]).to include('agent')
     end
 
     it 'enforces IMDSv2 on worker launch template' do
@@ -427,12 +433,21 @@ RSpec.describe Pangea::Kubernetes::Backends::AwsNixos do
       expect(lt[:attrs][:vpc_security_group_ids]).not_to be_empty
     end
 
-    it 'worker cloud-init includes join_server from NLB' do
+    it 'worker cloud-init includes join_server placeholder replaced via Terraform' do
       described_class.create_node_pool(ctx, :production, cluster_ref, pool_config, base_tags)
 
       lt = ctx.find_resource(:aws_launch_template, :production_workers_lt)
-      expect(lt[:attrs][:user_data]).to include('"join_server"')
-      expect(lt[:attrs][:user_data]).to include(cluster_ref.ipv4_address.to_s)
+      user_data = lt[:attrs][:user_data]
+      # user_data is a Terraform expression that uses replace() to inject the
+      # NLB DNS name at apply time (not synthesis time).
+      expect(user_data).to include('base64encode')
+      expect(user_data).to include('replace')
+      expect(user_data).to include('join_server')
+      # The actual Terraform reference is in the replace() call as a bare expression
+      join_ref = Pangea::Kubernetes::Backends::AwsNixos.send(
+        :strip_tf_interpolation, cluster_ref.ipv4_address.to_s
+      )
+      expect(user_data).to include(join_ref)
     end
 
     it 'adds resource-level tags to worker launch template' do

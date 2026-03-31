@@ -124,18 +124,53 @@ module Pangea
           # kindling-server-bootstrap.service (baked into the AMI) detects the
           # file via ExecCondition and runs the 13-phase bootstrap automatically.
           # This avoids a slow `nix run` that would re-download/build kindling.
+          #
+          # When node_index is "dynamic", the script queries EC2 instance
+          # metadata to derive a unique index from the instance ID. This is
+          # needed for ASG-based workers where all instances share the same
+          # launch template and cannot have a Terraform-time unique index.
           def generate_shell_script(config)
+            dynamic_index = config['node_index'] == 'dynamic'
             json = config.to_json
             <<~SHELL
               #!/usr/bin/env bash
               set -euo pipefail
-
+              #{dynamic_index_snippet if dynamic_index}
               mkdir -p "$(dirname '#{config_path}')"
               cat > '#{config_path}' << 'PANGEA_CONFIG_EOF'
               #{json}
               PANGEA_CONFIG_EOF
+              #{dynamic_index_sed_snippet if dynamic_index}
               chmod 0640 '#{config_path}'
             SHELL
+          end
+
+          # Shell snippet that resolves a unique node index from EC2 instance
+          # metadata. Uses the last 8 hex digits of the instance ID, converted
+          # to decimal, modulo 10000 for a reasonable hostname suffix.
+          def dynamic_index_snippet
+            # Uses double-quoted heredoc so Ruby does NOT interpolate (no #{} used),
+            # but shell WILL expand ${} at runtime.
+            <<~'BASH'.chomp
+              # Resolve dynamic node_index from EC2 instance metadata (IMDSv2)
+              IMDS_TOKEN=$(curl -sf -X PUT "http://169.254.169.254/latest/api/token" \
+                -H "X-aws-ec2-metadata-token-ttl-seconds: 30" 2>/dev/null || true)
+              INSTANCE_ID=$(curl -sf -H "X-aws-ec2-metadata-token: ${IMDS_TOKEN}" \
+                "http://169.254.169.254/latest/meta-data/instance-id" 2>/dev/null || echo "i-unknown0000")
+              # Extract last 8 hex chars, convert to decimal mod 10000
+              HEX_SUFFIX="${INSTANCE_ID: -8}"
+              NODE_INDEX=$(( 16#${HEX_SUFFIX} % 10000 ))
+            BASH
+          end
+
+          # Shell snippet that replaces the "dynamic" sentinel in the config JSON
+          # with the resolved NODE_INDEX value. Uses Ruby interpolation for the
+          # config path, but shell interpolation for NODE_INDEX.
+          def dynamic_index_sed_snippet
+            # rubocop:disable Style/StringLiterals
+            "# Replace dynamic node_index sentinel with resolved value\n" \
+            "sed -i \"s/\\\"node_index\\\":\\\"dynamic\\\"/\\\"node_index\\\":${NODE_INDEX}/\" '#{config_path}'"
+            # rubocop:enable Style/StringLiterals
           end
 
           # cloud-config YAML format — for providers with real cloud-init
