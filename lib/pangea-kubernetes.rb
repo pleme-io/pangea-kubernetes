@@ -32,7 +32,12 @@ require 'pangea/kubernetes/bare_metal/cluster_reference'
 # Elastic load balancer
 require 'pangea/kubernetes/load_balancer'
 
-# Backends are lazy-loaded by BackendRegistry — not required here.
+# Network backends (CNI/mesh selection)
+require 'pangea/kubernetes/network_backend_registry'
+require 'pangea/kubernetes/network_backends/base'
+
+# Compute backends are lazy-loaded by BackendRegistry — not required here.
+# Network backends are lazy-loaded by NetworkBackendRegistry.
 # Users only need the provider gem for backends they actually use.
 
 require 'pangea-kubernetes/version'
