@@ -149,17 +149,17 @@ module Pangea
           # metadata. Uses the last 8 hex digits of the instance ID, converted
           # to decimal, modulo 10000 for a reasonable hostname suffix.
           def dynamic_index_snippet
-            # Uses double-quoted heredoc so Ruby does NOT interpolate (no #{} used),
-            # but shell WILL expand ${} at runtime.
+            # Uses single-quoted heredoc so Ruby does NOT interpolate.
+            # Shell expands ${} at runtime.
+            # IMPORTANT: avoid bash 16#hex syntax — the # breaks Terraform's
+            # expression parser when embedded in base64encode(replace(...)).
+            # Use printf '%d' "0x..." instead for hex-to-decimal conversion.
             <<~'BASH'.chomp
-              # Resolve dynamic node_index from EC2 instance metadata (IMDSv2)
-              IMDS_TOKEN=$(curl -sf -X PUT "http://169.254.169.254/latest/api/token" \
-                -H "X-aws-ec2-metadata-token-ttl-seconds: 30" 2>/dev/null || true)
-              INSTANCE_ID=$(curl -sf -H "X-aws-ec2-metadata-token: ${IMDS_TOKEN}" \
-                "http://169.254.169.254/latest/meta-data/instance-id" 2>/dev/null || echo "i-unknown0000")
-              # Extract last 8 hex chars, convert to decimal mod 10000
+              IMDS_TOKEN=$(curl -sf -X PUT "http://169.254.169.254/latest/api/token" -H "X-aws-ec2-metadata-token-ttl-seconds: 30" 2>/dev/null || true)
+              INSTANCE_ID=$(curl -sf -H "X-aws-ec2-metadata-token: ${IMDS_TOKEN}" "http://169.254.169.254/latest/meta-data/instance-id" 2>/dev/null || echo "i-unknown0000")
               HEX_SUFFIX="${INSTANCE_ID: -8}"
-              NODE_INDEX=$(( 16#${HEX_SUFFIX} % 10000 ))
+              NODE_INDEX=$(printf '%d' "0x${HEX_SUFFIX}" 2>/dev/null || echo 0)
+              NODE_INDEX=$((NODE_INDEX % 10000))
             BASH
           end
 
@@ -168,7 +168,6 @@ module Pangea
           # config path, but shell interpolation for NODE_INDEX.
           def dynamic_index_sed_snippet
             # rubocop:disable Style/StringLiterals
-            "# Replace dynamic node_index sentinel with resolved value\n" \
             "sed -i \"s/\\\"node_index\\\":\\\"dynamic\\\"/\\\"node_index\\\":${NODE_INDEX}/\" '#{config_path}'"
             # rubocop:enable Style/StringLiterals
           end

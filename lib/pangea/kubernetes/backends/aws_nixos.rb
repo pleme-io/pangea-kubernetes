@@ -1176,31 +1176,34 @@ module Pangea
           # @param replacements [Hash<String,String>] placeholder => Terraform expression
           # @return [String] A Terraform expression string for the user_data attribute
           def terraform_base64encode(raw, replacements = {})
-            # Escape $ to $$ so Terraform treats ALL ${...} as literal text.
-            # This protects shell variables like ${INSTANCE_ID} from Terraform
-            # interpolation. Actual Terraform references are injected via
-            # replace() calls below.
-            escaped = raw.gsub('$', '$$')
+            require 'base64'
 
-            # Terraform string literal escaping: \ -> \\, " -> \", newline -> \n
-            tf_str = escaped
-              .gsub('\\', '\\\\')
-              .gsub('"', '\\"')
-              .gsub("\n", '\\n')
-              .gsub("\r", '\\r')
-              .gsub("\t", '\\t')
+            # Ruby handles ALL encoding. Terraform only resolves dynamic values.
+            #
+            # Strategy:
+            # 1. Base64-encode the entire content in Ruby (with placeholders intact)
+            # 2. For each Terraform-time replacement, find the base64-encoded form
+            #    of the placeholder and replace it with base64encode(tf_expression)
+            # 3. Terraform's expression parser only sees simple replace() calls
+            #    on short base64 markers — never the raw bash script content
+            #
+            # This eliminates ALL escaping issues ($, #, quotes, newlines, etc.)
+            # because the heavy content is opaque base64 by the time Terraform sees it.
 
-            expr = "\"#{tf_str}\""
-
-            # Wrap in replace() calls for each Terraform-resolved placeholder.
-            # The placeholder in the escaped string has $$ doubled, so we match
-            # the escaped form.
-            replacements.each do |placeholder, tf_expression|
-              escaped_placeholder = placeholder.gsub('$', '$$')
-              expr = "replace(#{expr}, \"#{escape_tf_string(escaped_placeholder)}\", #{tf_expression})"
+            if replacements.empty?
+              return Base64.strict_encode64(raw)
             end
 
-            "${base64encode(#{expr})}"
+            b64 = Base64.strict_encode64(raw)
+            expr = "\"#{b64}\""
+
+            replacements.each do |placeholder, tf_expression|
+              b64_placeholder = Base64.strict_encode64(placeholder)
+              bare_expr = tf_expression.delete_prefix('${').delete_suffix('}')
+              expr = "replace(#{expr}, \"#{b64_placeholder}\", base64encode(#{bare_expr}))"
+            end
+
+            "${#{expr}}"
           end
 
           # Escape a string for use inside a Terraform string literal

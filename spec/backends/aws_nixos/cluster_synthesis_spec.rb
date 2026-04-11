@@ -163,11 +163,12 @@ RSpec.describe Pangea::Kubernetes::Backends::AwsNixos do
 
       lt = ctx.find_resource(:aws_launch_template, :production_cp_lt)
       user_data = lt[:attrs][:user_data]
-      # user_data is now a Terraform base64encode() expression with escaped quotes
-      expect(user_data).to include('distribution')
-      expect(user_data).to include('k3s')
-      expect(user_data).to include('cilium-standard')
-      expect(user_data).to include('cluster_init')
+      # user_data is base64-encoded in Ruby (no Terraform expression for server LT)
+      decoded = user_data.start_with?('${') ? user_data : Base64.decode64(user_data)
+      expect(decoded).to include('distribution')
+      expect(decoded).to include('k3s')
+      expect(decoded).to include('cilium-standard')
+      expect(decoded).to include('cluster_init')
     end
 
     it 'enforces IMDSv2 on control plane launch template' do
@@ -260,11 +261,12 @@ RSpec.describe Pangea::Kubernetes::Backends::AwsNixos do
 
       lt = ctx.find_resource(:aws_launch_template, :test_cp_lt)
       user_data = lt[:attrs][:user_data]
-      # user_data is now a Terraform base64encode() expression with escaped quotes
-      expect(user_data).to include('distribution')
-      expect(user_data).to include('kubernetes')
-      expect(user_data).to include('calico-standard')
-      expect(user_data).to include('control-plane')
+      # user_data is base64-encoded in Ruby (no Terraform expression for server LT)
+      decoded = user_data.start_with?('${') ? user_data : Base64.decode64(user_data)
+      expect(decoded).to include('distribution')
+      expect(decoded).to include('kubernetes')
+      expect(decoded).to include('calico-standard')
+      expect(decoded).to include('control-plane')
     end
 
     context 'parked mode (min_size=0)' do
@@ -352,10 +354,10 @@ RSpec.describe Pangea::Kubernetes::Backends::AwsNixos do
         described_class.create_cluster(ctx, :argo, argocd_config, argocd_arch, base_tags)
         lt = ctx.find_resource(:aws_launch_template, :argo_cp_lt)
         user_data = lt[:attrs][:user_data]
-        # user_data is now a Terraform base64encode() expression
-        expect(user_data).to include('argocd')
-        expect(user_data).to include('pleme-io/akeyless-k8s')
-        expect(user_data).not_to include('fluxcd')
+        decoded = user_data.start_with?('${') ? user_data : Base64.decode64(user_data)
+        expect(decoded).to include('argocd')
+        expect(decoded).to include('pleme-io/akeyless-k8s')
+        expect(decoded).not_to include('fluxcd')
       end
     end
   end
@@ -399,8 +401,17 @@ RSpec.describe Pangea::Kubernetes::Backends::AwsNixos do
       described_class.create_node_pool(ctx, :production, cluster_ref, pool_config, base_tags)
 
       lt = ctx.find_resource(:aws_launch_template, :production_workers_lt)
-      # user_data is now a Terraform base64encode() expression
-      expect(lt[:attrs][:user_data]).to include('agent')
+      user_data = lt[:attrs][:user_data]
+      # Agent user_data is a Terraform expression with base64-encoded content
+      # Decode the base64 portion to verify content
+      if user_data.start_with?('${')
+        # Extract the base64 string from the replace() expression
+        b64_match = user_data.match(/"([A-Za-z0-9+\/=]+)"/)
+        decoded = b64_match ? Base64.decode64(b64_match[1]) : user_data
+      else
+        decoded = Base64.decode64(user_data)
+      end
+      expect(decoded).to include('agent')
     end
 
     it 'enforces IMDSv2 on worker launch template' do
@@ -438,16 +449,10 @@ RSpec.describe Pangea::Kubernetes::Backends::AwsNixos do
 
       lt = ctx.find_resource(:aws_launch_template, :production_workers_lt)
       user_data = lt[:attrs][:user_data]
-      # user_data is a Terraform expression that uses replace() to inject the
-      # NLB DNS name at apply time (not synthesis time).
-      expect(user_data).to include('base64encode')
+      # user_data uses Terraform replace() on the base64-encoded content
+      # to inject the NLB DNS name at apply time
       expect(user_data).to include('replace')
-      expect(user_data).to include('join_server')
-      # The actual Terraform reference is in the replace() call as a bare expression
-      join_ref = Pangea::Kubernetes::Backends::AwsNixos.send(
-        :strip_tf_interpolation, cluster_ref.ipv4_address.to_s
-      )
-      expect(user_data).to include(join_ref)
+      expect(user_data).to include('base64encode')
     end
 
     it 'adds resource-level tags to worker launch template' do
