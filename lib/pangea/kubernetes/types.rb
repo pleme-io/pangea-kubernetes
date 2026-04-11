@@ -240,6 +240,13 @@ module Pangea
         attribute :region, T::String
         attribute :node_pools, T::Array.of(NodePoolConfig).constrained(min_size: 1)
         attribute :network, NetworkConfig.optional.default(nil)
+
+        # Pre-built network result — when set, Phase 1 (create_network) is skipped.
+        # The template must provide a Pangea::Contracts::NetworkResult (or subclass).
+        # This enables external network architectures (e.g., SecureVpc from
+        # pangea-architectures) to be composed with kubernetes_cluster().
+        attribute :external_network, T::Any.optional.default(nil)
+
         attribute :addons, T::Array.of(T::Coercible::Symbol).default([].freeze)
         attribute :tags, T::Hash.default({}.freeze)
         attribute :encryption_at_rest, T::Bool.default(true)

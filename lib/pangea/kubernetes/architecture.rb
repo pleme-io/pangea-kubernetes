@@ -71,7 +71,11 @@ module Pangea
         result = ArchitectureResult.new(name, config)
 
         # Phase 1: Network
-        if config.network
+        # Pre-built network takes priority (e.g., SecureVpc from pangea-architectures).
+        # When external_network is set, skip backend's create_network entirely.
+        if config.external_network
+          result.network = config.external_network
+        elsif config.network
           result.network = backend_module.create_network(self, name, config, base_tags)
         end
 

@@ -292,38 +292,7 @@ module Pangea
             end
 
             # Security group — K3s ports restricted to VPC CIDR
-            network.sg = ctx.aws_security_group(
-              :"#{name}_sg",
-              description: "Security group for #{name} k8s/k3s NixOS nodes",
-              vpc_id: network.vpc.id,
-              tags: tags.merge(Name: "#{name}-sg")
-            )
-
-            # Ingress rules as separate aws_security_group_rule resources
-            aws_security_group_rules(config, vpc_cidr).each_with_index do |rule, idx|
-              rule_suffix = rule[:description]&.downcase&.gsub(/[^a-z0-9]+/, '_')&.gsub(/_+$/, '') || "rule_#{idx}"
-              ctx.aws_security_group_rule(
-                :"#{name}_sg_ingress_#{rule_suffix}",
-                type: 'ingress',
-                security_group_id: network.sg.id,
-                from_port: rule[:from_port],
-                to_port: rule[:to_port],
-                protocol: rule[:protocol],
-                cidr_blocks: rule[:cidr_blocks],
-                description: rule[:description]
-              )
-            end
-
-            # Egress rule — allow all outbound
-            ctx.aws_security_group_rule(
-              :"#{name}_sg_egress_all",
-              type: 'egress',
-              security_group_id: network.sg.id,
-              from_port: 0,
-              to_port: 0,
-              protocol: '-1',
-              cidr_blocks: ['0.0.0.0/0']
-            )
+            ensure_security_group(ctx, name, config, network, vpc_cidr, tags)
 
             # ── VPC Flow Logs (optional — network traffic auditing) ───
             if config.flow_logs_enabled
@@ -603,6 +572,13 @@ module Pangea
 
           # ── Phase 3: Cluster (control plane via LT+ASG+NLB) ────────────
           def create_cluster(ctx, name, config, result, tags)
+            # Ensure cluster SG exists — when external_network is used,
+            # create_network was skipped so network.sg may be nil.
+            if result.network && result.network.sg.nil?
+              vpc_cidr = config.network&.vpc_cidr || '10.0.0.0/16'
+              ensure_security_group(ctx, name, config, result.network, vpc_cidr, tags)
+            end
+
             system_pool = config.system_node_pool
             instance_type = system_pool.instance_types.first
             ami_id = if config.ami_id
@@ -1121,6 +1097,44 @@ module Pangea
             rules.reject! { |r| r[:description] == 'WireGuard VPN' } unless vpn_cidr || config.vpn
 
             rules
+          end
+
+          # Create cluster security group with K3s/K8s port rules.
+          # Called from create_network (normal path) and create_cluster
+          # (when external_network is provided and network.sg is nil).
+          def ensure_security_group(ctx, name, config, network, vpc_cidr, tags)
+            return if network.sg
+
+            network.sg = ctx.aws_security_group(
+              :"#{name}_sg",
+              description: "Security group for #{name} k8s/k3s NixOS nodes",
+              vpc_id: network.vpc.id,
+              tags: tags.merge(Name: "#{name}-sg")
+            )
+
+            aws_security_group_rules(config, vpc_cidr).each_with_index do |rule, idx|
+              rule_suffix = rule[:description]&.downcase&.gsub(/[^a-z0-9]+/, '_')&.gsub(/_+$/, '') || "rule_#{idx}"
+              ctx.aws_security_group_rule(
+                :"#{name}_sg_ingress_#{rule_suffix}",
+                type: 'ingress',
+                security_group_id: network.sg.id,
+                from_port: rule[:from_port],
+                to_port: rule[:to_port],
+                protocol: rule[:protocol],
+                cidr_blocks: rule[:cidr_blocks],
+                description: rule[:description]
+              )
+            end
+
+            ctx.aws_security_group_rule(
+              :"#{name}_sg_egress_all",
+              type: 'egress',
+              security_group_id: network.sg.id,
+              from_port: 0,
+              to_port: 0,
+              protocol: '-1',
+              cidr_blocks: ['0.0.0.0/0']
+            )
           end
 
           def kms_cloudwatch_policy(account_id, region)
