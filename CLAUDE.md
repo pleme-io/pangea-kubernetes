@@ -1,5 +1,13 @@
 # pangea-kubernetes
 
+<!-- Blackmatter alignment: pillars 5, 7 -->
+<!-- See ~/code/github/pleme-io/BLACKMATTER.md for pillar definitions. -->
+
+## Blackmatter pillars upheld
+
+- **Pillar 5** (Infrastructure declaration): cloud-agnostic Kubernetes abstractions for Pangea — one typed declaration maps to EKS / GKE / AKS / K3s. Same shape, 8 backends.
+- **Pillar 7** (Kubernetes control): Pangea Ruby → Kubernetes manifests, HelmReleases, Kustomization CRDs. Provider gems (EKS/GKE/AKS/K3s) inherit the pattern.
+
 Cloud-agnostic Kubernetes abstractions for the Pangea infrastructure DSL.
 Provides `kubernetes_cluster()` and `kubernetes_node_pool()` functions that
 compile to provider-specific Terraform JSON via backend modules. All code
