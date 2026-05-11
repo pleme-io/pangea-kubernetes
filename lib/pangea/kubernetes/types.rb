@@ -27,6 +27,7 @@ require 'pangea/kubernetes/types/k3s_config'
 require 'pangea/kubernetes/types/kubernetes_config'
 require 'pangea/kubernetes/types/argocd_config'
 require 'pangea/kubernetes/types/vpn_config'
+require 'pangea/kubernetes/types/persistent_state_config'
 
 module Pangea
   module Kubernetes
@@ -362,6 +363,11 @@ module Pangea
         # VPN configuration (WireGuard links for operator access)
         attribute :vpn, VpnConfig.optional.default(nil)
 
+        # Persistent state volume — opt-in EBS volume decoupled from the
+        # instance lifecycle. Survives ASG sleep/wake + instance churn.
+        # See PersistentStateConfig for the full slot surface.
+        attribute :persistent_state, PersistentStateConfig.optional.default(nil)
+
         # ── Infrastructure parameters (NOT tags — typed config fields) ──
         # These were previously smuggled through the tags hash.
         # Now they're proper typed attributes that don't pollute resource tags.
@@ -436,6 +442,7 @@ module Pangea
           hash[:fluxcd] = fluxcd.to_h if fluxcd
           hash[:nixos] = nixos.to_h if nixos
           hash[:vpn] = vpn.to_h if vpn && vpn.links.any?
+          hash[:persistent_state] = persistent_state.to_h if persistent_state
           hash[:role_arn] = role_arn if role_arn
           hash[:ami_id] = ami_id if ami_id
           hash[:ssm_ami_parameter] = ssm_ami_parameter if ssm_ami_parameter

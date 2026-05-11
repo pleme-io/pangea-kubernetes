@@ -116,7 +116,8 @@ module Pangea
             kubernetes: config.distribution == :kubernetes ? config.nixos&.kubernetes&.to_h : nil,
             secrets: build_secrets_hash(config),
             vpn: config.vpn&.to_h,
-            bootstrap_secrets: build_bootstrap_secrets(config)
+            bootstrap_secrets: build_bootstrap_secrets(config),
+            persistent_state: config.persistent_state&.to_h
           )
         end
 

@@ -51,13 +51,15 @@ module Pangea
           # @param secrets [Hash, nil] Secrets path references (sops-nix)
           # @param vpn [Hash, nil] VPN configuration (WireGuard links)
           # @param bootstrap_secrets [Hash, nil] Bootstrap secrets (age key, tokens) written at first boot
+          # @param persistent_state [Hash, nil] Persistent EBS-volume mount config — kindling discovers + attaches + mounts before k3s starts
           # @param format [Symbol] :shell (NixOS AMIs) or :cloud_config (real cloud-init)
           # @return [String] user_data string
           def generate(cluster_name:, distribution: :k3s, profile: 'cloud-server',
                        distribution_track: '1.34', role: 'server', node_index: 0,
                        cluster_init: false, network_id: nil, join_server: nil,
                        fluxcd: nil, argocd: nil, k3s: nil, kubernetes: nil, secrets: nil,
-                       vpn: nil, bootstrap_secrets: nil, format: :shell)
+                       vpn: nil, bootstrap_secrets: nil, persistent_state: nil,
+                       format: :shell)
             config = {
               'cluster_name' => cluster_name,
               'distribution' => distribution.to_s,
@@ -77,6 +79,7 @@ module Pangea
             config['secrets'] = stringify_keys_recursive(secrets) if secrets && !secrets.empty?
             config['vpn'] = stringify_keys_recursive(vpn) if vpn && !vpn.empty?
             config['bootstrap_secrets'] = stringify_keys_recursive(bootstrap_secrets) if bootstrap_secrets && !bootstrap_secrets.empty?
+            config['persistent_state'] = stringify_keys_recursive(persistent_state) if persistent_state && !persistent_state.empty?
 
             case format.to_sym
             when :cloud_config

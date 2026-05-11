@@ -345,7 +345,53 @@ module Pangea
                 ignore_public_acls: true, restrict_public_buckets: true)
             end
 
+            # ── Persistent state volume (opt-in) ────────────────────
+            # When config.persistent_state is set, provision a
+            # separately-managed EBS volume tagged for discovery from
+            # within the cluster instance. lifecycle.prevent_destroy is
+            # ON — only an explicit operator action with the lifecycle
+            # block removed (or terraform state rm) can destroy this
+            # volume. The volume survives ASG sleep/wake, instance
+            # replacement, and even a full `pangea destroy` of the
+            # cluster template.
+            if config.persistent_state
+              persistent_az = persistent_state_az(config)
+              ps = config.persistent_state
+              vol_attrs = {
+                availability_zone: persistent_az,
+                size: ps.size_gb,
+                type: ps.volume_type,
+                encrypted: ps.encrypted,
+                tags: tags.merge(
+                  Name: "#{name}-persistent-state",
+                  Role: 'persistent-state',
+                  Cluster: name.to_s,
+                  ps.discovery_tag.to_sym => name.to_s
+                ),
+                lifecycle: { prevent_destroy: true }
+              }
+              vol_attrs[:kms_key_id] = ps.kms_key_id if ps.kms_key_id
+              vol_attrs[:iops] = ps.iops if ps.iops
+              vol_attrs[:throughput] = ps.throughput if ps.throughput
+              network.persistent_state_volume = ctx.aws_ebs_volume(
+                :"#{name}_persistent_state",
+                **vol_attrs
+              )
+            end
+
             network
+          end
+
+          # ── Persistent state AZ selection ─────────────────────────
+          # When config.persistent_state.availability_zone is explicit,
+          # use it. Otherwise default to the first web-tier AZ — i.e.
+          # `<region>a` — matching the convention that the system pool
+          # ASG launches into web-a when persistent_state is set.
+          def persistent_state_az(config)
+            explicit = config.persistent_state&.availability_zone
+            return explicit if explicit && !explicit.empty?
+
+            "#{config.region}a"
           end
 
           # ── Phase 2: IAM (least-privilege) ───────────────────────────
@@ -567,6 +613,47 @@ module Pangea
               )
             end
 
+            # ── Policy: Persistent state volume attach/detach ──────
+            # When persistent_state is configured, the node role needs
+            # to be able to (a) describe the cluster's tagged EBS
+            # volume to find its VolumeId, and (b) attach/detach it
+            # to/from this instance. Tag-scoped so the role cannot
+            # touch unrelated volumes in the account.
+            if config.persistent_state
+              ps = config.persistent_state
+              tag_condition = {
+                StringEquals: {
+                  "aws:ResourceTag/#{ps.discovery_tag}" => name.to_s
+                }
+              }
+              iam.persistent_state_policy = ctx.aws_iam_policy(
+                :"#{name}_persistent_state",
+                description: "Discover + attach the persistent-state EBS volume for #{name}",
+                policy: JSON.generate({
+                  Version: '2012-10-17',
+                  Statement: [{
+                    Sid: 'DescribeVolumes',
+                    Effect: 'Allow',
+                    Action: %w[ec2:DescribeVolumes ec2:DescribeInstances],
+                    Resource: ['*']
+                  }, {
+                    Sid: 'AttachDetachTaggedVolume',
+                    Effect: 'Allow',
+                    Action: %w[ec2:AttachVolume ec2:DetachVolume],
+                    Resource: [
+                      "arn:aws:ec2:#{region}:#{account_id}:volume/*",
+                      "arn:aws:ec2:#{region}:#{account_id}:instance/*"
+                    ],
+                    Condition: tag_condition
+                  }]
+                }),
+                tags: tags
+              )
+              ctx.aws_iam_role_policy_attachment(:"#{name}_persistent_state",
+                                                role: iam.role.ref(:name),
+                                                policy_arn: iam.persistent_state_policy.ref(:arn))
+            end
+
             iam
           end
 
@@ -591,6 +678,11 @@ module Pangea
                         config.nixos&.image_id || 'ami-nixos-latest'
                       end
             subnet_ids = resolve_subnet_ids(config, result)
+            # AZ binding: EBS volumes are AZ-scoped. When persistent_state
+            # is configured the control plane ASG must launch into the
+            # same AZ as the volume — otherwise attach fails. Filter the
+            # multi-AZ subnet list down to the persistent_state AZ.
+            subnet_ids = filter_subnets_to_persistent_az(subnet_ids, config, result) if config.persistent_state
             sg_id = result.network&.sg&.id
             instance_profile_name = result.iam&.instance_profile&.ref(:name)
             key_name = config.key_pair
@@ -1016,6 +1108,25 @@ module Pangea
           end
 
           private
+
+          # Narrow a multi-AZ subnet list down to the single AZ that the
+          # cluster's persistent state volume lives in. Looks up the
+          # web-tier subnet whose availability_zone matches
+          # persistent_state_az(config). Returns the original list
+          # unchanged if no match (e.g. operator passed an explicit
+          # subnet list via config.network.subnet_ids).
+          def filter_subnets_to_persistent_az(subnet_ids, config, result)
+            target_az = persistent_state_az(config)
+            return subnet_ids unless result&.network&.respond_to?(:web_subnets)
+
+            target_subnet = result.network.web_subnets.find do |s|
+              s.respond_to?(:availability_zone) &&
+                s.availability_zone.to_s.end_with?(target_az.to_s)
+            end
+            return subnet_ids unless target_subnet
+
+            [target_subnet.id]
+          end
 
           # Resolve subnet IDs for K8s nodes — prefer web tier (private), fall back to all subnets.
           def resolve_subnet_ids(config, result)

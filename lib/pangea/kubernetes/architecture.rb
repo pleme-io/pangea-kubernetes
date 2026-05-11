@@ -122,7 +122,8 @@ module Pangea
         attr_accessor :igw, :route_table, :etcd_bucket,
                       :flow_log, :flow_log_role,
                       :ssm_logs_bucket,
-                      :kms_key
+                      :kms_key,
+                      :persistent_state_volume
 
         def initialize
           super
@@ -133,6 +134,7 @@ module Pangea
           @flow_log_role = nil
           @ssm_logs_bucket = nil
           @kms_key = nil
+          @persistent_state_volume = nil
         end
 
         def [](key)
@@ -144,6 +146,7 @@ module Pangea
           when :flow_log_role then flow_log_role
           when :ssm_logs_bucket then ssm_logs_bucket
           when :kms_key then kms_key
+          when :persistent_state_volume then persistent_state_volume
           else super
           end
         end
@@ -157,6 +160,7 @@ module Pangea
           hash[:flow_log_role] = flow_log_role if flow_log_role
           hash[:ssm_logs_bucket] = ssm_logs_bucket if ssm_logs_bucket
           hash[:kms_key] = kms_key if kms_key
+          hash[:persistent_state_volume] = persistent_state_volume if persistent_state_volume
           hash
         end
       end
@@ -227,7 +231,8 @@ module Pangea
         attr_accessor :log_group,
                       :ecr_policy, :etcd_policy, :logs_policy,
                       :ec2_policy, :ssm_policy,
-                      :karpenter_role, :karpenter_profile
+                      :karpenter_role, :karpenter_profile,
+                      :persistent_state_policy
 
         def initialize
           super
@@ -239,6 +244,7 @@ module Pangea
           @ssm_policy = nil
           @karpenter_role = nil
           @karpenter_profile = nil
+          @persistent_state_policy = nil
         end
 
         # Hash-style access for backward compatibility
@@ -252,6 +258,7 @@ module Pangea
           when :ssm_policy then ssm_policy
           when :karpenter_role then karpenter_role
           when :karpenter_profile then karpenter_profile
+          when :persistent_state_policy then persistent_state_policy
           else super
           end
         end
@@ -266,6 +273,7 @@ module Pangea
           hash[:ssm_policy] = ssm_policy if ssm_policy
           hash[:karpenter_role] = karpenter_role if karpenter_role
           hash[:karpenter_profile] = karpenter_profile if karpenter_profile
+          hash[:persistent_state_policy] = persistent_state_policy if persistent_state_policy
           hash
         end
       end
