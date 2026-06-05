@@ -558,6 +558,35 @@ module Pangea
             ctx.aws_iam_role_policy_attachment(:"#{name}_ssm",
                                               role: iam.role.ref(:name), policy_arn: iam.ssm_policy.ref(:arn))
 
+            # ── Policy: SSM bootstrap-secret read (W3b) ──────────────
+            # The node fetches its own bootstrap secrets from SSM
+            # SecureString at boot (no secret values in the rendered
+            # tf.json / user_data). Path-scoped to this cluster's secrets
+            # tree; kms:Decrypt gated to the SSM service so the node can
+            # only decrypt through GetParameter, not arbitrary KMS use.
+            ssm_secrets_policy = ctx.aws_iam_policy(
+              :"#{name}_ssm_secrets",
+              description: "SSM SecureString bootstrap-secret read for #{name} K3s nodes",
+              policy: JSON.generate({
+                Version: '2012-10-17',
+                Statement: [{
+                  Sid: 'SsmGetBootstrapSecrets',
+                  Effect: 'Allow',
+                  Action: %w[ssm:GetParameter ssm:GetParameters ssm:GetParametersByPath],
+                  Resource: ["arn:aws:ssm:#{region}:#{account_id}:parameter/pangea/#{name}/secrets/*"],
+                }, {
+                  Sid: 'KmsDecryptViaSsm',
+                  Effect: 'Allow',
+                  Action: ['kms:Decrypt'],
+                  Resource: ['*'],
+                  Condition: { StringEquals: { 'kms:ViaService': "ssm.#{region}.amazonaws.com" } },
+                }],
+              }),
+              tags: tags,
+            )
+            ctx.aws_iam_role_policy_attachment(:"#{name}_ssm_secrets",
+                                              role: iam.role.ref(:name), policy_arn: ssm_secrets_policy.ref(:arn))
+
             # ── KMS Key for CloudWatch Logs (optional) ─────────────────
             kms_key_id = nil
             if config.kms_logs_enabled
