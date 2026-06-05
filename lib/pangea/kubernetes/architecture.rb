@@ -85,10 +85,16 @@ module Pangea
         # Phase 3: Cluster
         result.cluster = backend_module.create_cluster(self, name, config, result, base_tags)
 
-        # Phase 4: Node Pools
-        config.node_pools.each do |pool_config|
-          pool_ref = backend_module.create_node_pool(self, name, result.cluster, pool_config, base_tags)
-          result.add_node_pool(pool_config.name, pool_ref)
+        # Phase 4: Node Pools — skipped in single-node mode. The control
+        # plane (sized from the :system pool in Phase 3) is the only node and
+        # runs all workloads; creating per-pool agent ASGs here would add the
+        # duplicate :system agent + workers that make the default layout 4
+        # nodes instead of 1.
+        unless config.single_node
+          config.node_pools.each do |pool_config|
+            pool_ref = backend_module.create_node_pool(self, name, result.cluster, pool_config, base_tags)
+            result.add_node_pool(pool_config.name, pool_ref)
+          end
         end
 
         result

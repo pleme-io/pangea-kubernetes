@@ -240,6 +240,14 @@ module Pangea
         attribute :kubernetes_version, T::String.constrained(included_in: SUPPORTED_K8S_VERSIONS).default('1.29')
         attribute :region, T::String
         attribute :node_pools, T::Array.of(NodePoolConfig).constrained(min_size: 1)
+        # Single-node mode: the control plane node is the ONLY node and runs
+        # all workloads (the k3s server schedules pods — it carries a master
+        # label but no NoSchedule taint, and disable_agent defaults false).
+        # The node_pools array still sizes the control plane via the :system
+        # pool, but Phase 4 (separate agent ASGs) is skipped — no duplicate
+        # :system agent, no workers. Collapses the default cp+system+workers
+        # layout to one schedulable node.
+        attribute :single_node, T::Bool.default(false)
         attribute :network, NetworkConfig.optional.default(nil)
 
         # Pre-built network result — when set, Phase 1 (create_network) is skipped.
