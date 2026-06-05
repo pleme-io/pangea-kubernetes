@@ -58,8 +58,8 @@ module Pangea
                        distribution_track: '1.34', role: 'server', node_index: 0,
                        cluster_init: false, network_id: nil, join_server: nil,
                        fluxcd: nil, argocd: nil, k3s: nil, kubernetes: nil, secrets: nil,
-                       vpn: nil, bootstrap_secrets: nil, persistent_state: nil,
-                       format: :shell)
+                       vpn: nil, bootstrap_secrets: nil, ssm_secret_refs: nil,
+                       persistent_state: nil, format: :shell)
             config = {
               'cluster_name' => cluster_name,
               'distribution' => distribution.to_s,
@@ -79,6 +79,7 @@ module Pangea
             config['secrets'] = stringify_keys_recursive(secrets) if secrets && !secrets.empty?
             config['vpn'] = stringify_keys_recursive(vpn) if vpn && !vpn.empty?
             config['bootstrap_secrets'] = stringify_keys_recursive(bootstrap_secrets) if bootstrap_secrets && !bootstrap_secrets.empty?
+            config['ssm_secret_refs'] = stringify_keys_recursive(ssm_secret_refs) if ssm_secret_refs && !ssm_secret_refs.empty?
             config['persistent_state'] = stringify_keys_recursive(persistent_state) if persistent_state && !persistent_state.empty?
 
             case format.to_sym

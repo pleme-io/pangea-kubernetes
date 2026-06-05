@@ -117,6 +117,7 @@ module Pangea
             secrets: build_secrets_hash(config),
             vpn: config.vpn&.to_h,
             bootstrap_secrets: build_bootstrap_secrets(config),
+            ssm_secret_refs: build_ssm_secret_refs(config),
             persistent_state: config.persistent_state&.to_h
           )
         end
@@ -194,6 +195,16 @@ module Pangea
           return nil if bs.values.all? { |v| v.nil? || (v.is_a?(String) && v.empty?) }
 
           bs
+        end
+
+        # W3b: SSM SecureString references (secret-name => SSM parameter
+        # PATH). When present, the node fetches its secrets at boot via its
+        # instance role; no secret value rides in cloud-init / tf.json.
+        def build_ssm_secret_refs(config)
+          refs = config.respond_to?(:ssm_secret_refs) ? config.ssm_secret_refs : nil
+          return nil unless refs.is_a?(Hash) && refs.any?
+
+          refs
         end
 
         # Extract only the secrets workers need to join the cluster.

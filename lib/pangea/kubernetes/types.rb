@@ -364,6 +364,11 @@ module Pangea
         # Written to disk before sops-nix activates. Never included in resource tags.
         # Keys: sops_age_key (cluster age private key), flux_github_token (GitHub PAT)
         attribute :bootstrap_secrets, T::Hash.default({}.freeze)
+        # W3b: SSM SecureString references (secret-name => SSM parameter
+        # PATH, never the value). When set, the node fetches secrets at boot
+        # via its instance role instead of receiving them in cloud-init —
+        # so synth emits no secret values. Same keys as bootstrap_secrets.
+        attribute :ssm_secret_refs, T::Hash.default({}.freeze)
 
         # NixOS configuration (NixOS backends only)
         attribute :nixos, NixOSConfig.optional.default(nil)
