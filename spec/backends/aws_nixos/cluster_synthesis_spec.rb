@@ -124,6 +124,32 @@ RSpec.describe Pangea::Kubernetes::Backends::AwsNixos do
       ip = profiles.first
       expect(ip[:attrs][:tags]).to include(:Name)
     end
+
+    # Regression guard for the akeyless-dev 2026-06-20 apply failure: IAM
+    # resources without an explicit `name:` get auto-named `terraform-*`,
+    # which falls outside a least-privilege operator's `#{name}-*` IAM ARN
+    # scope → CreateRole/CreatePolicy AccessDenied (6 denials observed in
+    # CloudTrail). Naming every IAM resource in-scope is the load-bearing
+    # fix; these tests make the regression unrepresentable.
+    it 'names every IAM resource inside the cluster ARN scope (no auto-named terraform-*)' do
+      iam_result
+      iam_types = %w[aws_iam_role aws_iam_policy aws_iam_instance_profile]
+      iam_resources = ctx.created_resources.select { |r| iam_types.include?(r[:type]) }
+      expect(iam_resources).not_to be_empty
+      iam_resources.each do |r|
+        name = r[:attrs][:name]
+        expect(name).to be_a(String),
+          "#{r[:type]} has no explicit name: — provider would auto-name it terraform-*"
+        expect(name).to start_with('production-'),
+          "#{r[:type]} name #{name.inspect} not in the production-* least-priv scope"
+      end
+    end
+
+    it 'names the CloudWatch log group so the node logs policy ARN matches' do
+      iam_result
+      lg = ctx.created_resources.find { |r| r[:type] == 'aws_cloudwatch_log_group' }
+      expect(lg[:attrs][:name]).to eq('/k3s/production')
+    end
   end
 
   describe '.create_cluster' do

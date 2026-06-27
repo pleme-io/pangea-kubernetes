@@ -419,6 +419,12 @@ module Pangea
 
             iam.role = ctx.aws_iam_role(
               :"#{name}_node_role",
+              # Explicit in-scope name (NOT just a Name tag): the provider would
+              # otherwise auto-generate a `terraform-*` name that falls outside a
+              # least-privilege operator's `#{name}-*` IAM ARN scope → CreateRole
+              # AccessDenied. Naming it `#{name}-node-role` makes the create
+              # representable under the tight scope (load-bearing, net tightening).
+              name: "#{name}-node-role",
               description: "Least-privilege role for #{name} K3s cluster nodes",
               assume_role_policy: assume_role_policy,
               max_session_duration: 3600,
@@ -427,6 +433,7 @@ module Pangea
 
             iam.instance_profile = ctx.aws_iam_instance_profile(
               :"#{name}_node_profile",
+              name: "#{name}-node-profile",
               role: iam.role.ref(:name),
               tags: tags.merge(Name: "#{name}-node-profile")
             )
@@ -436,6 +443,7 @@ module Pangea
 
             iam.ecr_policy = ctx.aws_iam_policy(
               :"#{name}_ecr_read",
+              name: "#{name}-ecr-read",
               description: "ECR read-only for #{name} K3s nodes",
               policy: JSON.generate({
                 Version: '2012-10-17',
@@ -466,6 +474,7 @@ module Pangea
             if config.etcd_backup_enabled
               iam.etcd_policy = ctx.aws_iam_policy(
                 :"#{name}_etcd_backup",
+                name: "#{name}-etcd-backup",
                 description: "S3 etcd backup access for #{name} K3s nodes",
                 policy: JSON.generate({
                   Version: '2012-10-17',
@@ -487,6 +496,7 @@ module Pangea
 
             iam.logs_policy = ctx.aws_iam_policy(
               :"#{name}_logs",
+              name: "#{name}-cloudwatch-logs",
               description: "CloudWatch log access for #{name} K3s nodes",
               policy: JSON.generate({
                 Version: '2012-10-17',
@@ -521,6 +531,7 @@ module Pangea
 
             iam.ec2_policy = ctx.aws_iam_policy(
               :"#{name}_ec2_describe",
+              name: "#{name}-ec2-describe",
               description: "EC2 read-only metadata for #{name} K3s nodes",
               policy: JSON.generate({ Version: '2012-10-17', Statement: [ec2_statement] }),
               tags: tags,
@@ -532,6 +543,7 @@ module Pangea
             ssm_bucket = config.ssm_logs_bucket || etcd_bucket
             iam.ssm_policy = ctx.aws_iam_policy(
               :"#{name}_ssm",
+              name: "#{name}-ssm-session",
               description: "SSM session access for #{name} K3s nodes",
               policy: JSON.generate({
                 Version: '2012-10-17',
@@ -566,6 +578,7 @@ module Pangea
             # only decrypt through GetParameter, not arbitrary KMS use.
             ssm_secrets_policy = ctx.aws_iam_policy(
               :"#{name}_ssm_secrets",
+              name: "#{name}-ssm-secrets",
               description: "SSM SecureString bootstrap-secret read for #{name} K3s nodes",
               policy: JSON.generate({
                 Version: '2012-10-17',
@@ -613,6 +626,10 @@ module Pangea
 
             iam.log_group = ctx.aws_cloudwatch_log_group(
               :"#{name}_logs",
+              # Explicit name so it matches the node logs policy's
+              # `log-group:/k3s/#{name}:*` resource ARN (an auto-named group
+              # would never match → node CloudWatch writes silently denied).
+              name: log_group,
               **log_group_attrs
             )
 
@@ -629,6 +646,7 @@ module Pangea
 
               iam.karpenter_role = ctx.aws_iam_role(
                 :"#{name}_karpenter_role",
+                name: "#{name}-karpenter-role",
                 description: "Karpenter node role for #{name} (IRSA)",
                 assume_role_policy: karpenter_assume,
                 max_session_duration: 3600,
@@ -637,6 +655,7 @@ module Pangea
 
               iam.karpenter_profile = ctx.aws_iam_instance_profile(
                 :"#{name}_karpenter_profile",
+                name: "#{name}-karpenter-profile",
                 role: iam.karpenter_role.ref(:name),
                 tags: tags.merge(Name: "#{name}-karpenter-profile")
               )
@@ -657,6 +676,7 @@ module Pangea
               }
               iam.persistent_state_policy = ctx.aws_iam_policy(
                 :"#{name}_persistent_state",
+                name: "#{name}-persistent-state",
                 description: "Discover + attach the persistent-state EBS volume for #{name}",
                 policy: JSON.generate({
                   Version: '2012-10-17',
