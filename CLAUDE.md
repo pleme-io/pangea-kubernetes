@@ -168,8 +168,8 @@ Layer 1 (Cloud-init): NixOS reads config JSON → k3s + GitOps operator
 Layer 2 (GitOps):     Karpenter, workloads, everything else
 ```
 
-The akeyless-k8s GitOps repo (`pleme-io/akeyless-k8s`) follows the standard
-FluxCD structure: `clusters/{name}/{flux-system,infrastructure,apps}`.
+The GitOps repo follows the standard FluxCD structure:
+`clusters/{name}/{flux-system,infrastructure,apps}`.
 
 ## Key types
 
