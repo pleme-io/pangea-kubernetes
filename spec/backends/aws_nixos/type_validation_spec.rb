@@ -44,7 +44,7 @@ RSpec.describe 'aws_nixos backend type validation' do
       ],
       network: { vpc_cidr: '10.0.0.0/16' },
       tags: {
-        account_id: '376129857990',
+        account_id: '123456789012',
         etcd_backup_bucket: 'typecheck-etcd-backups',
         ssh_cidr: '10.0.0.0/8',
         api_cidr: '10.0.0.0/8',
@@ -141,7 +141,7 @@ RSpec.describe 'aws_nixos backend type validation' do
           ami_id: 'ami-nixos-test', key_pair: 'typecheck-key', karpenter_enabled: true,
           node_pools: [{ name: :system, instance_types: ['t3.medium'], min_size: 1, max_size: 1, disk_size_gb: 50 }],
           network: { vpc_cidr: '10.0.0.0/16' },
-          tags: { account_id: '376129857990', etcd_backup_bucket: 'typecheck-etcd' }
+          tags: { account_id: '123456789012', etcd_backup_bucket: 'typecheck-etcd' }
         )
       end
 
@@ -262,7 +262,7 @@ RSpec.describe 'aws_nixos backend type validation' do
           ],
           network: { vpc_cidr: '10.0.0.0/16' },
           tags: {
-            account_id: '376129857990',
+            account_id: '123456789012',
             etcd_backup_bucket: 'typecheck-etcd-backups',
             ssh_cidr: '10.0.0.0/8',
             api_cidr: '10.0.0.0/8',
@@ -290,7 +290,7 @@ RSpec.describe 'aws_nixos backend type validation' do
           ],
           network: { vpc_cidr: '10.0.0.0/16' },
           tags: {
-            account_id: '376129857990',
+            account_id: '123456789012',
             etcd_backup_bucket: 'typecheck-etcd-backups',
             ssh_cidr: '10.0.0.0/8',
             api_cidr: '10.0.0.0/8',
@@ -323,7 +323,7 @@ RSpec.describe 'aws_nixos backend type validation' do
           ],
           network: { vpc_cidr: '10.0.0.0/16' },
           tags: {
-            account_id: '376129857990',
+            account_id: '123456789012',
             etcd_backup_bucket: 'typecheck-etcd-backups',
             ssh_cidr: '10.0.0.0/8',
             api_cidr: '10.0.0.0/8',
@@ -360,7 +360,7 @@ RSpec.describe 'aws_nixos backend type validation' do
           ],
           network: { vpc_cidr: '10.0.0.0/16' },
           tags: {
-            account_id: '376129857990',
+            account_id: '123456789012',
             etcd_backup_bucket: 'typecheck-etcd-backups',
             ssh_cidr: '10.0.0.0/8',
             api_cidr: '10.0.0.0/8',
@@ -369,41 +369,41 @@ RSpec.describe 'aws_nixos backend type validation' do
       }.not_to raise_error
     end
 
-    it 'passes type validation for the full akeyless-dev-cluster scenario with VPN NLB' do
+    it 'passes type validation for the full dev-cluster scenario with VPN NLB' do
       synth = create_typed_aws_context
       synth.extend(Pangea::Kubernetes::Architecture)
 
-      # Run the same kubernetes_cluster() call the akeyless-dev template makes
-      result = synth.kubernetes_cluster(:akeyless_dev, {
+      # Run the same kubernetes_cluster() call the dev-cluster template makes
+      result = synth.kubernetes_cluster(:dev_cluster, {
         backend: :aws_nixos,
         kubernetes_version: '1.29',
         region: 'us-east-1',
         distribution: :k3s,
         profile: 'cilium-standard',
         ami_id: 'ami-nixos-test',
-        key_pair: 'akeyless-dev-key',
+        key_pair: 'dev-cluster-key',
         node_pools: [
           { name: :system, instance_types: ['t3.medium'], min_size: 1, max_size: 1, disk_size_gb: 50 },
           { name: :worker, instance_types: ['t3.medium'], min_size: 1, max_size: 4, disk_size_gb: 50 },
         ],
         network: { vpc_cidr: '10.0.0.0/16' },
         tags: {
-          account_id: '376129857990',
-          etcd_backup_bucket: 'akeyless-dev-etcd-backups',
+          account_id: '123456789012',
+          etcd_backup_bucket: 'dev-cluster-etcd-backups',
           ssh_cidr: '10.0.0.0/8',
           api_cidr: '10.0.0.0/8',
           vpn_cidr: '10.100.3.0/24',
         },
         vpn: {
-          interface: 'wg-akeyless-dev',
+          interface: 'wg-dev-cluster',
           address: '10.100.3.2/24',
           port: 51822,
         },
         fluxcd: {
-          source_url: 'https://github.com/pleme-io/akeyless-k8s',
+          source_url: 'https://github.com/pleme-io/example-gitops',
           source_branch: 'main',
           source_auth: 'token',
-          reconcile_path: './clusters/akeyless-dev',
+          reconcile_path: './clusters/dev-cluster',
           sops_enabled: true,
         },
       })
@@ -450,20 +450,20 @@ RSpec.describe 'aws_nixos backend type validation' do
       expect(result.cluster.security_group).not_to be_nil
       expect(result.cluster.security_group.id).not_to be_nil
 
-      # Now exercise the VPN NLB resources (same calls as akeyless_dev_cluster.rb)
+      # Now exercise the VPN NLB resources (same calls as dev_cluster.rb)
       expect {
         synth.aws_lb(:vpn_wireguard, {
-          name: 'akeyless-dev-vpn',
+          name: 'dev-cluster-vpn',
           internal: false,
           load_balancer_type: 'network',
           subnets: result.network.subnet_ids,
-          tags: { Name: 'akeyless-dev-vpn-nlb' },
+          tags: { Name: 'dev-cluster-vpn-nlb' },
         })
       }.not_to raise_error
 
       expect {
         synth.aws_lb_target_group(:vpn_wireguard, {
-          name: 'akeyless-dev-vpn-wg',
+          name: 'dev-cluster-vpn-wg',
           port: 51822,
           protocol: 'UDP',
           vpc_id: result.network.vpc.id,

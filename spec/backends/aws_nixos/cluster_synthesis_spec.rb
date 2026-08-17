@@ -125,7 +125,7 @@ RSpec.describe Pangea::Kubernetes::Backends::AwsNixos do
       expect(ip[:attrs][:tags]).to include(:Name)
     end
 
-    # Regression guard for the akeyless-dev 2026-06-20 apply failure: IAM
+    # Regression guard for the 2026-06-20 dev-cluster apply failure: IAM
     # resources without an explicit `name:` get auto-named `terraform-*`,
     # which falls outside a least-privilege operator's `#{name}-*` IAM ARN
     # scope → CreateRole/CreatePolicy AccessDenied (6 denials observed in
@@ -363,7 +363,7 @@ RSpec.describe Pangea::Kubernetes::Backends::AwsNixos do
           distribution: :k3s, profile: 'cilium-standard', distribution_track: '1.34',
           ami_id: 'ami-nixos-test', key_pair: 'my-key',
           gitops_operator: :argocd,
-          argocd: { repo_url: 'ssh://git@github.com/pleme-io/akeyless-k8s', path: './clusters/kazoku' },
+          argocd: { repo_url: 'ssh://git@github.com/pleme-io/example-gitops', path: './clusters/kazoku' },
           node_pools: [{ name: :system, instance_types: ['t3.small'], min_size: 1, max_size: 1 }],
           network: { vpc_cidr: '10.0.0.0/16' },
           account_id: '123456789012', etcd_backup_bucket: 'test-etcd'
@@ -382,7 +382,7 @@ RSpec.describe Pangea::Kubernetes::Backends::AwsNixos do
         user_data = lt[:attrs][:user_data]
         decoded = user_data.start_with?('${') ? user_data : Base64.decode64(user_data)
         expect(decoded).to include('argocd')
-        expect(decoded).to include('pleme-io/akeyless-k8s')
+        expect(decoded).to include('pleme-io/example-gitops')
         expect(decoded).not_to include('fluxcd')
       end
     end
